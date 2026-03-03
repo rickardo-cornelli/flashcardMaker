@@ -1,0 +1,18 @@
+# virtual environment and api-key file
+*.env
+ankiEnv/
+# macOS stuff
+.DS_Store
+
+# python cache 
+__pycache__/
+*.pyc
+media_fetchers/__pycache__/
+
+# test files
+test.py
+test/
+
+# media files
+audio/
+images/
