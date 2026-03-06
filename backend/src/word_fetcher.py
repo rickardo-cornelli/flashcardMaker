@@ -1,266 +1,281 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from deep_translator import GoogleTranslator
+from bs4 import BeautifulSoup
 import requests
 import mwparserfromhell
 import re
 import time
-
-# --- Configuration ---
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "anki-french-dict/1.0 (your_email@example.com)"})
-
-def fetch_batch_wikitext(word_list):
-    """Fetches wikitext for up to 50 words in a single API call."""
-    url = "https://fr.wiktionary.org/w/api.php"
-    params = {
-        "action": "query",
-        "prop": "revisions",
-        "rvprop": "content",
-        "format": "json",
-        "titles": "|".join(word_list),
-        "redirects": 1
-    }
-    try:
-        resp = SESSION.get(url, params=params, timeout=15)
-        data = resp.json()
-        
-        results_map = {}
-        if "query" in data and "pages" in data["query"]:
-            for page_data in data["query"]["pages"].values():
-                title = page_data["title"]
-                if "revisions" in page_data:
-                    results_map[title] = page_data["revisions"][0]["*"]
-                else:
-                    results_map[title] = None
-        return results_map
-    except Exception as e:
-        print(f"Error fetching batch: {e}")
-        return {}
-
-def extract_french_section(raw_text):
-    """Isolates the French portion of the Wiktionary page."""
-    if not raw_text: 
-        return ""
-    sections = re.split(r'==\s*\{\{langue\|fr\}\}\s*==', raw_text, flags=re.IGNORECASE)
-    if len(sections) < 2: 
-        return ""
-    # Stop before the next language section (== {{langue|...}} ==)
-    return re.split(r'==\s*\{\{langue\|', sections[1], flags=re.IGNORECASE)[0]
-
-def process_wiktionary_templates(fr_section):
-    """
-    Resolves multi-line templates and converts domain tags 
-    (flags) into readable text like '(Militaire)'.
-    """
-    parsed = mwparserfromhell.parse(fr_section)
-    
-    # Templates to delete entirely
-    delete_templates = ['source', 'sans source', 'citation', 'ouvrage', 'réf', 'référer', 'lien web', 'article', 'pron']
-    # Structural templates to keep as-is (just for their text)
-    structural_templates = ['lien', 'l', 'm', 'f', 'p', 's', 'w', 'langue', 'variante de']
-
-    for template in parsed.filter_templates():
-        t_name = str(template.name).lower().strip()
-        
-        # 1. Handle Example Templates ({{exemple|...}})
-        if t_name in ['exemple', 'ex', 'ux', 'q']:
-            text_val = ""
-            for param in template.params:
-                p_name = str(param.name).strip()
-                if p_name in ['lang', 'source', 'auteur', 'titre', 'ouvrage', 'date', 'page']: continue
-                p_val = str(param.value).strip()
-                if p_val == "fr": 
-                    continue
-                text_val = p_val
-                break
-            try:
-                # Flatten newlines within examples to keep the # list structure clean
-                parsed.replace(template, text_val.replace('\n', ' '))
-            except ValueError: 
-                pass
-
-        # 2. Convert standard Context Tags
-        elif t_name in ['lexique', 'term', 'itf', 'inflected']:
-            labels = [str(p.value).strip() for p in template.params if str(p.value).strip() not in ["fr", ""]]
-            label_text = f"({', '.join(labels)}) " if labels else ""
-            try: 
-                parsed.replace(template, label_text)
-            except ValueError: 
-                pass
-
-        # 3. Dynamic Catch-all for Flags (e.g. {{militaire|fr}})
-        elif t_name not in structural_templates and t_name not in delete_templates:
-            # If it's a simple template (no key=value pairs), treat it as a flag
-            has_named_params = any(not str(p.name).isdigit() for p in template.params)
-            if not has_named_params:
-                extra_labels = [str(p.value).strip() for p in template.params if str(p.value).strip() not in ['fr', '']]
-                all_labels = [t_name.capitalize()] + extra_labels
-                try: 
-                    parsed.replace(template, f"({', '.join(all_labels)}) ")
-                except ValueError: 
-                    pass
-
-        # 4. Cleanup junk
-        elif t_name in delete_templates:
-            try: 
-                parsed.remove(template)
-            except ValueError: 
-                pass
-
-    return str(parsed)
-
-def clean_sentence(text):
-    """Final strip of Wiki formatting like [[links]] or '''bold'''."""
-    parsed = mwparserfromhell.parse(text)
-    clean = parsed.strip_code()
-    clean = re.sub(r'<[^>]+>', ' ', clean)
-    clean = clean.replace("'''", "").replace("''", "")
-    # Cleanup parentheses spacing
-    clean = re.sub(r'\(\s+', '(', clean)
-    clean = re.sub(r'\s+\)', ')', clean)
-    clean = re.sub(r'\s+', ' ', clean)
-    return clean.strip()
-
-def parse_dictionary(wikitext_processed):
-    """Splits processed text into definition and example pairs."""
-    entries = []
-    current_entry = None
-    
-    for line in wikitext_processed.split('\n'):
-        line = line.strip()
-        if not line: 
-            continue
-        
-        # DEFINITION (#)
-        if line.startswith('#') and not (line.startswith('#*') or line.startswith('##')):
-            clean_def = clean_sentence(line.lstrip('# '))
-            if clean_def:
-                current_entry = {'definition': clean_def, 'examples': []}
-                entries.append(current_entry)
-                
-        # EXAMPLE (#*)
-        elif line.startswith('#*') and current_entry is not None:
-            clean_ex = clean_sentence(line.lstrip('#* '))
-            if clean_ex and clean_ex != current_entry['definition']:
-                if clean_ex not in current_entry['examples']:
-                    current_entry['examples'].append(clean_ex)
-    return entries
-
-def run_anki_generator(word_list):
-    """Main coordinator that handles batching and processing."""
-    master_results = {}
-    
-    # Chunking into 50s
-    for i in range(0, len(word_list), 50):
-        chunk = word_list[i : i + 50]
-        print(f"Processing batch {i//50 + 1}: {chunk[0]}...")
-        
-        batch_raw = fetch_batch_wikitext(chunk)
-        
-        for word, raw in batch_raw.items():
-            if not raw:
-                master_results[word] = []
-                continue
-            
-            fr_text = extract_french_section(raw)
-            clean_wikitext = process_wiktionary_templates(fr_text)
-            master_results[word] = parse_dictionary(clean_wikitext)
-        
-        time.sleep(1) # Respectful delay
-        
-    return master_results
-
-
+import os
+from collections import Counter
 
 app = FastAPI()
 
-# Allow Quasar to talk to Python locally
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Since it's local dev, * is fine for now
+    allow_origins=["*"], 
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "anki-french-dict/1.0 (your_email@example.com)"})
+SESSION.headers.update({"User-Agent": "anki-french-dict/2.0 (your_email@example.com)"})
+
+# --- GLOBAL STATE FOR BOOKS ---
+LIBRARY_TEXT = ""
+WORD_FREQUENCIES = Counter()
+KNOWN_WORDS_FILE = "known_words.txt"
+NAMES_TO_HIDE = [
+    "D'Artagnan", "Athos", "Porthos", "Aramis", "Milady", "Richelieu", 
+    "Bonacieux", "Buckingham", "Anne d'Autriche", "Louis XIII", "Felton", 
+    "de Winter", "Rochefort", "Tréville"
+]
 
 class WordRequest(BaseModel):
     words: list[str]
 
-def get_wikimedia_images(word, limit=5):
-    """Fetches image URLs from Wikimedia Commons, falls back to English if empty."""
+class ExportRequest(BaseModel):
+    selected_data: dict
+
+# --- HELPER FUNCTIONS ---
+
+def get_known_words():
+    """Reads the list of words already added to Anki."""
+    if not os.path.exists(KNOWN_WORDS_FILE):
+        return set()
+    with open(KNOWN_WORDS_FILE, "r", encoding="utf-8") as f:
+        return set(line.strip().lower() for line in f if line.strip())
+
+def anonymize_sentence(text):
+    """Replaces character names with [Personnage] to avoid spoilers."""
+    for name in NAMES_TO_HIDE:
+        pattern = re.compile(re.escape(name), re.IGNORECASE)
+        text = pattern.sub("[Personnage]", text)
+    return text
+
+def get_wikimedia_images(word, limit=15):
     url = "https://commons.wikimedia.org/w/api.php"
-    
-    def search_commons(search_term):
+    def run_query(query_term):
         params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": f"filetype:bitmap {search_term}", # bitmap filters out audio/video
-            "gsrlimit": limit,
-            "prop": "imageinfo",
-            "iiprop": "url",
-            "format": "json"
+            "action": "query", "generator": "search", "gsrsearch": query_term,
+            "gsrnamespace": 6, "gsrlimit": limit, "prop": "imageinfo",
+            "iiprop": "url|thumburl", "iiurlwidth": 400, "format": "json"
         }
         try:
             resp = SESSION.get(url, params=params, timeout=10)
-            data = resp.json()
-            pages = data.get("query", {}).get("pages", {})
-            return [p.get("imageinfo", [{}])[0].get("url") for p in pages.values() if p.get("imageinfo")]
-        except Exception:
-            return []
+            pages = resp.json().get("query", {}).get("pages", {})
+            urls = []
+            for p in pages.values():
+                info = p.get("imageinfo", [{}])[0]
+                img_url = info.get("thumburl") or info.get("url")
+                if img_url:
+                    if img_url.startswith("//"): img_url = "https:" + img_url
+                    urls.append(img_url)
+            return urls
+        except: return []
 
-    # 1. Try French first
-    images = search_commons(word)
+    fr_images = run_query(word)
+    en_images = []
+    try:
+        en_word = GoogleTranslator(source='fr', target='en').translate(word)
+        if en_word.lower() != word.lower(): en_images = run_query(en_word)
+    except: pass
     
-    # 2. Fallback to English if no images found
-    if not images:
-        try:
-            english_word = GoogleTranslator(source='fr', target='en').translate(word)
-            print(f"No images for '{word}'. Trying English: '{english_word}'")
-            images = search_commons(english_word)
-        except Exception as e:
-            print(f"Translation failed: {e}")
-            
-    return images
+    return list(dict.fromkeys(fr_images + en_images))[:limit]
 
-# ... [KEEP YOUR EXISTING FUNCS: fetch_batch_wikitext, extract_french_section, process_wiktionary_templates, clean_sentence, parse_dictionary] ...
-# (I am omitting them here for brevity, just paste your exact functions here)
+def get_robert_data(word):
+    url = f"https://dictionnaire.lerobert.com/definition/{word.lower()}"
+    try:
+        resp = SESSION.get(url, timeout=5)
+        if resp.status_code != 200: return []
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # Le Robert blocks
+        def_blocks = soup.select('.d_dfn') # Definition wrapper
+        results = []
+        
+        for block in def_blocks[:4]:
+            # Extract Register/Tag (e.g., Littér., Fig.)
+            marq = block.select_one('.d_marq')
+            tag = marq.get_text(strip=True) if marq else ""
+            if marq: marq.extract() # Remove tag from definition text
+            
+            # Extract Definition text
+            def_text = block.select_one('.d_def')
+            def_str = def_text.get_text(strip=True) if def_text else ""
+            
+            # Extract Example
+            ex_text = block.select_one('.d_ex')
+            ex_str = ex_text.get_text(strip=True) if ex_text else ""
+            
+            if def_str:
+                results.append({
+                    "definition": def_str,
+                    "examples": [ex_str] if ex_str else [],
+                    "tags": [tag] if tag else []
+                })
+        return results
+    except: return []
+
+def fetch_batch_wikitext(word_list):
+    url = "https://fr.wiktionary.org/w/api.php"
+    params = {
+        "action": "query", "prop": "revisions", "rvprop": "content",
+        "format": "json", "titles": "|".join(word_list), "redirects": 1
+    }
+    try:
+        resp = SESSION.get(url, params=params, timeout=15)
+        data = resp.json()
+        results_map = {}
+        if "query" in data and "pages" in data["query"]:
+            for page_data in data["query"]["pages"].values():
+                title = page_data["title"]
+                results_map[title] = page_data["revisions"][0]["*"] if "revisions" in page_data else None
+        return results_map
+    except: return {}
+
+def extract_french_section(raw_text):
+    if not raw_text: return ""
+    sections = re.split(r'==\s*\{\{langue\|fr\}\}\s*==', raw_text, flags=re.IGNORECASE)
+    if len(sections) < 2: return ""
+    return re.split(r'==\s*\{\{langue\|', sections[1], flags=re.IGNORECASE)[0]
+
+def process_wiktionary_templates(fr_section):
+    parsed = mwparserfromhell.parse(fr_section)
+    delete_templates = ['source', 'sans source', 'citation', 'ouvrage', 'réf', 'lien web', 'pron']
+    structural = ['lien', 'l', 'm', 'f', 'p', 's', 'w', 'langue']
+
+    for template in parsed.filter_templates():
+        t_name = str(template.name).lower().strip()
+        if t_name in ['exemple', 'ex', 'ux']:
+            text_val = next((str(p.value).strip() for p in template.params if str(p.name).strip() not in ['lang','source','auteur'] and str(p.value).strip() != "fr"), "")
+            try: parsed.replace(template, text_val.replace('\n', ' '))
+            except ValueError: pass
+        elif t_name not in structural and t_name not in delete_templates:
+            # Format tags as [TAG] to parse later
+            labels = [str(p.value).strip() for p in template.params if not str(p.name).isdigit() and str(p.value).strip() not in ['fr', '']]
+            all_labels = [t_name.capitalize()] + labels
+            try: parsed.replace(template, f"[{', '.join(all_labels)}]")
+            except ValueError: pass
+        elif t_name in delete_templates:
+            try: parsed.remove(template)
+            except ValueError: pass
+    return str(parsed)
+
+def clean_sentence(text):
+    parsed = mwparserfromhell.parse(text)
+    clean = parsed.strip_code()
+    clean = re.sub(r'<[^>]+>', ' ', clean)
+    clean = clean.replace("'''", "").replace("''", "")
+    return re.sub(r'\s+', ' ', clean).strip()
+
+def parse_dictionary(wikitext_processed):
+    entries = []
+    current_entry = None
+    
+    for line in wikitext_processed.split('\n'):
+        line = line.strip()
+        if not line: continue
+        
+        if line.startswith('#') and not (line.startswith('#*') or line.startswith('##')):
+            clean_def = clean_sentence(line.lstrip('# '))
+            if clean_def:
+                # Extract tags formatted as [Tag] at the start of the definition
+                tags = []
+                while clean_def.startswith('['):
+                    end_idx = clean_def.find(']')
+                    if end_idx != -1:
+                        tags.append(clean_def[1:end_idx])
+                        clean_def = clean_def[end_idx+1:].strip()
+                    else: break
+                
+                current_entry = {'definition': clean_def, 'examples': [], 'tags': tags}
+                entries.append(current_entry)
+                
+        elif line.startswith('#*') and current_entry is not None:
+            clean_ex = clean_sentence(line.lstrip('#* '))
+            if clean_ex and clean_ex != current_entry['definition']:
+                current_entry['examples'].append(clean_ex)
+    return entries
+
+
+# --- API ENDPOINTS ---
+
+@app.post("/api/upload-books")
+async def upload_books(files: list[UploadFile] = File(...)):
+    global LIBRARY_TEXT, WORD_FREQUENCIES
+    combined_text = ""
+    for file in files:
+        content = await file.read()
+        combined_text += content.decode("utf-8", errors="ignore") + "\n"
+    
+    LIBRARY_TEXT = combined_text
+    # Build frequency counter (lowercased words, stripped of punctuation)
+    words = re.findall(r'\b[a-zàâçéèêëîïôûùüÿñæœ]+\b', LIBRARY_TEXT.lower())
+    WORD_FREQUENCIES = Counter(words)
+    
+    return {"status": "success", "length": len(LIBRARY_TEXT), "unique_words": len(WORD_FREQUENCIES)}
 
 @app.post("/api/fetch-words")
 def fetch_words_endpoint(req: WordRequest):
-    """The API endpoint Quasar will call."""
-    master_results = {}
-    word_list = req.words
+    known_words = get_known_words()
     
-    # Process in chunks of 50
-    for i in range(0, len(word_list), 50):
-        chunk = word_list[i : i + 50]
-        batch_raw = fetch_batch_wikitext(chunk) # Your existing function
+    # Filter out already known words
+    words_to_process = [w for w in req.words if w.lower() not in known_words]
+    
+    master_results = {}
+    batch_raw = fetch_batch_wikitext(words_to_process)
+    
+    for word in words_to_process:
+        raw = batch_raw.get(word)
+        wik_defs = parse_dictionary(process_wiktionary_templates(extract_french_section(raw))) if raw else []
+        rob_defs = get_robert_data(word)
+        images = get_wikimedia_images(word, limit=15)
         
-        for word, raw in batch_raw.items():
-            if not raw:
-                master_results[word] = {"definitions": [], "images": []}
-                continue
-            
-            fr_text = extract_french_section(raw)
-            clean_wikitext = process_wiktionary_templates(fr_text)
-            definitions = parse_dictionary(clean_wikitext)
-            
-            # Fetch images for this word
-            images = get_wikimedia_images(word, limit=5)
-            
-            master_results[word] = {
-                "definitions": definitions,
-                "images": images
-            }
-        time.sleep(1)
-        
+        master_results[word] = {
+            "occurrences": WORD_FREQUENCIES.get(word.lower(), 0),
+            "wik_definitions": wik_defs,
+            "rob_definitions": rob_defs,
+            "images": images
+        }
     return master_results
 
-# Run the server
+@app.post("/api/book-examples")
+def fetch_book_examples(word: str = Form(...), offset: int = Form(0)):
+    if not LIBRARY_TEXT: return {"examples": [], "total": 0, "hasMore": False}
+    
+    # Safe zone (first 30%)
+    safe_zone = int(len(LIBRARY_TEXT) * 0.3)
+    safe_text = LIBRARY_TEXT[:safe_zone]
+    
+    sentences = re.split(r'(?<=[.!?])\s+', safe_text)
+    pattern = re.compile(rf'\b{word}\b', re.IGNORECASE)
+    
+    matches = []
+    for s in sentences:
+        clean = " ".join(s.split())
+        if pattern.search(clean) and clean not in matches and len(clean) < 300:
+            matches.append(clean)
+            
+    clean_matches = [anonymize_sentence(m) for m in matches]
+    paginated = clean_matches[offset : offset + 5]
+    
+    return {"examples": paginated, "total": len(matches), "hasMore": len(matches) > (offset + 5)}
+
+@app.post("/api/export-anki")
+def export_to_anki(req: ExportRequest):
+    """Saves the final payload and appends words to known_words.txt"""
+    words_added = list(req.selected_data.keys())
+    
+    with open(KNOWN_WORDS_FILE, "a", encoding="utf-8") as f:
+        for word in words_added:
+            f.write(word.lower() + "\n")
+            
+    # Here you would typically generate the CSV or connect to AnkiConnect.
+    # For now, we return success and the frontend can handle the JSON.
+    return {"status": "success", "added_words": words_added}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
