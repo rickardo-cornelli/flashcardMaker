@@ -140,21 +140,46 @@ const processBooks = async () => {
 }
 
 const fetchData = async () => {
-  const wordsArray = rawInput.value.split(/[\n,]+/).map(w => w.trim().toLowerCase()).filter(w => w.length > 0)
-  if (wordsArray.length === 0) return
-
+  const words = rawInput.value.split(/[,\n]/).map(w => w.trim()).filter(w => w)
+  if (!words.length) return
+  
   isLoading.value = true
   try {
-    const res = await axios.post('http://127.0.0.1:8000/api/fetch-words', { words: wordsArray })
+    const res = await axios.post('http://127.0.0.1:8000/api/fetch-words', { words })
     results.value = res.data
     
-    selections.value = {}
+    // THE FIX: Initialize selection arrays so v-models don't crash
     for (const w in res.data) {
-      selections.value[w] = { images: [], activeDefs: [], selectedExamples: {} }
-      res.data[w].rob_definitions.forEach(d => { selections.value[w].selectedExamples[d.definition] = [] })
-      res.data[w].wik_definitions.forEach(d => { selections.value[w].selectedExamples[d.definition] = [] })
+      if (!selections.value[w]) {
+        selections.value[w] = {
+          activeDefs: [],
+          selectedExamples: {},
+          selectedImages: [],
+          transOnly: false
+        }
+      }
+      
+      // Initialize empty arrays for Le Robert examples
+      if (res.data[w].rob_definitions) {
+        res.data[w].rob_definitions.forEach(d => {
+          if (!selections.value[w].selectedExamples[d.definition]) {
+            selections.value[w].selectedExamples[d.definition] = []
+          }
+        })
+      }
+      
+      // Initialize empty arrays for Wiktionary examples
+      if (res.data[w].wik_definitions) {
+        res.data[w].wik_definitions.forEach(d => {
+          if (!selections.value[w].selectedExamples[d.definition]) {
+            selections.value[w].selectedExamples[d.definition] = []
+          }
+        })
+      }
     }
-  } catch (e) { console.error(e) }
+  } catch (err) {
+    console.error("Fetch error:", err)
+  }
   isLoading.value = false
 }
 
