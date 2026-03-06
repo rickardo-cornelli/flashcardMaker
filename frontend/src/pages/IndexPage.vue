@@ -148,29 +148,29 @@ const fetchData = async () => {
     const res = await axios.post('http://127.0.0.1:8000/api/fetch-words', { words })
     results.value = res.data
     
-    // THE FIX: Initialize selection arrays so v-models don't crash
     for (const w in res.data) {
       if (!selections.value[w]) {
         selections.value[w] = {
           activeDefs: [],
           selectedExamples: {},
-          selectedImages: [],
+          images: [],
           transOnly: false
         }
       }
       
-      // Initialize empty arrays for Le Robert examples
-      if (res.data[w].rob_definitions) {
-        res.data[w].rob_definitions.forEach(d => {
+      // BULLETPROOF FIX: Check if it exists and is an Array before looping
+      const robDefs = res.data[w].rob_definitions
+      if (Array.isArray(robDefs)) {
+        robDefs.forEach(d => {
           if (!selections.value[w].selectedExamples[d.definition]) {
             selections.value[w].selectedExamples[d.definition] = []
           }
         })
       }
       
-      // Initialize empty arrays for Wiktionary examples
-      if (res.data[w].wik_definitions) {
-        res.data[w].wik_definitions.forEach(d => {
+      const wikDefs = res.data[w].wik_definitions
+      if (Array.isArray(wikDefs)) {
+        wikDefs.forEach(d => {
           if (!selections.value[w].selectedExamples[d.definition]) {
             selections.value[w].selectedExamples[d.definition] = []
           }
