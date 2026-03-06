@@ -1,99 +1,98 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from deep_translator import GoogleTranslator
-import requests
-import mwparserfromhell
-import re
-import time
-
-app = FastAPI()
-
-# Allow Quasar to talk to Python locally
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], # Since it's local dev, * is fine for now
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "anki-french-dict/1.0 (your_email@example.com)"})
-
-class WordRequest(BaseModel):
-    words: list[str]
-
-def get_wikimedia_images(word, limit=5):
-    """Fetches image URLs from Wikimedia Commons, falls back to English if empty."""
-    url = "https://commons.wikimedia.org/w/api.php"
+# ---> TARGETED FIX: LE ROBERT FUNCTION <---
+def get_robert_data(word):
+    url = f"https://dictionnaire.lerobert.com/definition/{word.lower()}"
+    print(f"\n{'='*50}")
+    print(f"--- [LE ROBERT SCRAPER START: {word.upper()}] ---")
     
-    def search_commons(search_term):
-        params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": f"filetype:bitmap {search_term}", # bitmap filters out audio/video
-            "gsrlimit": limit,
-            "prop": "imageinfo",
-            "iiprop": "url",
-            "format": "json"
+    try:
+        resp = SESSION.get(url, timeout=10)
+        
+        # 1. WRITE THE FULL RAW HTML TO A FILE
+        raw_filename = f"lerobert_{word.lower()}_raw.html"
+        with open(raw_filename, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        print(f"-> SAVED: Full raw HTML written to '{raw_filename}'")
+        
+        if resp.status_code != 200:
+            print(f"HTTP Error: {resp.status_code}")
+            return {"defs": [], "synonyms": [], "article": ""}
+            
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # EXTRACT ARTICLE / GENDER
+        article = ""
+        pos_tag = soup.select_one('.d_cat')
+        if pos_tag:
+            pos_text = pos_tag.get_text(strip=True).lower()
+            if "masculin" in pos_text and "nom" in pos_text:
+                article = "le / un"
+            elif "féminin" in pos_text and "nom" in pos_text:
+                article = "la / une"
+        
+        # EXTRACT DEFINITIONS & INLINE EXAMPLES
+        def_blocks = soup.select('.d_dfn')
+        results = []
+        for i, block in enumerate(def_blocks):
+            marq = block.select_one('.d_marq')
+            tag = marq.get_text(strip=True) if marq else ""
+            
+            inline_examples = [ex.get_text(strip=True) for ex in block.select('.d_ex')]
+            
+            def_node = block.select_one('.d_def')
+            if def_node:
+                def_str = def_node.get_text(strip=True)
+            else:
+                raw_text = block.get_text(" ", strip=True).replace(tag, "")
+                for ex in inline_examples:
+                    raw_text = raw_text.replace(ex, "")
+                def_str = raw_text.strip(": ").strip()
+                
+            if def_str:
+                results.append({
+                    "definition": def_str,
+                    "examples": inline_examples,
+                    "tags": [tag] if tag else []
+                })
+
+        # EXTRACT EXTERNAL / LITERARY EXAMPLES
+        # Targeting the exact class from your paste: .ex_example
+        corpus_elements = soup.select('.ex_example')
+        literary_examples = []
+        for c in corpus_elements:
+            author_tag = c.select_one('.ex_author')
+            if author_tag:
+                author_tag.extract()
+            text = c.get_text(" ", strip=True)
+            if len(text) > 15:
+                literary_examples.append(text)
+                
+        # Attach literary examples to the first definition
+        if literary_examples and results:
+            results[0]["examples"].extend(literary_examples[:10])
+        elif literary_examples and not results:
+            results.append({"definition": "Exemples divers:", "examples": literary_examples[:10], "tags": []})
+            
+        # EXTRACT SYNONYMS (.s_syn based on your paste)
+        syn_elements = soup.select('.s_syn')
+        synonyms = list(dict.fromkeys([s.get_text(strip=True) for s in syn_elements]))
+
+        # ASSEMBLE FINAL DATA
+        final_data = {
+            "defs": results,
+            "synonyms": synonyms[:10],
+            "article": article
         }
-        try:
-            resp = SESSION.get(url, params=params, timeout=10)
-            data = resp.json()
-            pages = data.get("query", {}).get("pages", {})
-            return [p.get("imageinfo", [{}])[0].get("url") for p in pages.values() if p.get("imageinfo")]
-        except Exception:
-            return []
-
-    # 1. Try French first
-    images = search_commons(word)
-    
-    # 2. Fallback to English if no images found
-    if not images:
-        try:
-            english_word = GoogleTranslator(source='fr', target='en').translate(word)
-            print(f"No images for '{word}'. Trying English: '{english_word}'")
-            images = search_commons(english_word)
-        except Exception as e:
-            print(f"Translation failed: {e}")
-            
-    return images
-
-# ... [KEEP YOUR EXISTING FUNCS: fetch_batch_wikitext, extract_french_section, process_wiktionary_templates, clean_sentence, parse_dictionary] ...
-# (I am omitting them here for brevity, just paste your exact functions here)
-
-@app.post("/api/fetch-words")
-def fetch_words_endpoint(req: WordRequest):
-    """The API endpoint Quasar will call."""
-    master_results = {}
-    word_list = req.words
-    
-    # Process in chunks of 50
-    for i in range(0, len(word_list), 50):
-        chunk = word_list[i : i + 50]
-        batch_raw = fetch_batch_wikitext(chunk) # Your existing function
         
-        for word, raw in batch_raw.items():
-            if not raw:
-                master_results[word] = {"definitions": [], "images": []}
-                continue
-            
-            fr_text = extract_french_section(raw)
-            clean_wikitext = process_wiktionary_templates(fr_text)
-            definitions = parse_dictionary(clean_wikitext)
-            
-            # Fetch images for this word
-            images = get_wikimedia_images(word, limit=5)
-            
-            master_results[word] = {
-                "definitions": definitions,
-                "images": images
-            }
-        time.sleep(1)
+        # 2. WRITE THE RETURNED JSON TO A FILE
+        json_filename = f"lerobert_{word.lower()}_parsed.json"
+        with open(json_filename, "w", encoding="utf-8") as f:
+            json.dump(final_data, f, indent=2, ensure_ascii=False)
+        print(f"-> SAVED: Parsed JSON written to '{json_filename}'")
+        print(f"{'='*50}\n")
         
-    return master_results
-
-# Run the server
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+        return final_data
+        
+    except Exception as e:
+        print(f"CRITICAL ERROR: {str(e)}")
+        traceback.print_exc()
+        return {"defs": [], "synonyms": [], "article": ""}

@@ -6,6 +6,8 @@ from bs4 import BeautifulSoup
 import requests
 import mwparserfromhell
 import re
+import json
+import traceback
 import time
 import os
 from collections import Counter
@@ -84,39 +86,118 @@ def get_wikimedia_images(word, limit=15):
     
     return list(dict.fromkeys(fr_images + en_images))[:limit]
 
+# ---> TARGETED FIX: LE ROBERT FUNCTION (NOW WITH HTML LOGGING) <---
+# ---> TARGETED FIX: LE ROBERT FUNCTION (SMART PARSER) <---
 def get_robert_data(word):
     url = f"https://dictionnaire.lerobert.com/definition/{word.lower()}"
+    print(f"\n{'='*50}\n--- [LE ROBERT SCRAPER START: {word.upper()}] ---\nURL: {url}")
+    
     try:
-        resp = SESSION.get(url, timeout=5)
-        if resp.status_code != 200: return []
+        resp = SESSION.get(url, timeout=10)
+        
+        # 1. WRITE THE RAW HTML
+        raw_filename = f"lerobert_{word.lower()}_raw.html"
+        with open(raw_filename, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+            
+        if resp.status_code != 200:
+            return {"defs": [], "synonyms": [], "article": ""}
+            
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Le Robert blocks
-        def_blocks = soup.select('.d_dfn') # Definition wrapper
+        # 2. EXTRACT ARTICLE / GENDER
+        article = ""
+        pos_tag = soup.select_one('.d_cat')
+        if pos_tag:
+            pos_text = pos_tag.get_text(strip=True).lower()
+            if "masculin" in pos_text and "nom" in pos_text: article = "le / un"
+            elif "féminin" in pos_text and "nom" in pos_text: article = "la / une"
+        
+        # 3. SMART EXTRACT: DEFINITIONS, CONTEXT, AND INLINE EXAMPLES
         results = []
         
-        for block in def_blocks[:4]:
-            # Extract Register/Tag (e.g., Littér., Fig.)
-            marq = block.select_one('.d_marq')
-            tag = marq.get_text(strip=True) if marq else ""
-            if marq: marq.extract() # Remove tag from definition text
+        # Le Robert uses .d_dvn for main definitions and .d_dvl for sub-definitions
+        def_blocks = soup.select('.d_dvn, .d_dvl')
+        
+        for block in def_blocks:
+            # Find Context Tags (e.g., "littéraire", "figuré")
+            context_tags = [t.get_text(strip=True) for t in block.select('.d_mta, .d_marq') if t.get_text(strip=True)]
             
-            # Extract Definition text
-            def_text = block.select_one('.d_def')
-            def_str = def_text.get_text(strip=True) if def_text else ""
+            # Find the Definition text
+            def_node = block.select_one('.d_dfn')
             
-            # Extract Example
-            ex_text = block.select_one('.d_ex')
-            ex_str = ex_text.get_text(strip=True) if ex_text else ""
+            # Find Inline Examples
+            inline_examples = [ex.get_text(strip=True) for ex in block.select('.d_xpl')]
             
-            if def_str:
+            if def_node:
+                def_str = def_node.get_text(strip=True)
                 results.append({
                     "definition": def_str,
-                    "examples": [ex_str] if ex_str else [],
-                    "tags": [tag] if tag else []
+                    "examples": inline_examples,
+                    "tags": context_tags
                 })
-        return results
-    except: return []
+            elif inline_examples:
+                # Sometimes a sub-block only has context and an example, no strict definition
+                # e.g., "par exagération : Taisez-vous, ma tête va éclater !"
+                if results:
+                    # Append it as an example to the previous definition, but prefix the context
+                    prefix = f"[{', '.join(context_tags)}] " if context_tags else ""
+                    formatted_examples = [f"{prefix}{ex}" for ex in inline_examples]
+                    results[-1]["examples"].extend(formatted_examples)
+
+        # 4. EXTRACT INFLECTED FORMS (Like "ravie")
+        if not results:
+            inflection_blocks = soup.select('#formes .infl_links .b')
+            for block in inflection_blocks:
+                h3 = block.select_one('h3')
+                if h3:
+                    # Also grab the link text if it points to the root word
+                    link = block.select_one('.def-link a')
+                    def_str = h3.get_text(" ", strip=True)
+                    if link:
+                        def_str += f" (Voir: {link.get_text(strip=True)})"
+                        
+                    results.append({
+                        "definition": def_str,
+                        "examples": [],
+                        "tags": ["Forme fléchie"]
+                    })
+
+        # 5. EXTRACT EXTERNAL EXAMPLES (.ex_example)
+        corpus_elements = soup.select('.ex_example, .infl_example')
+        literary_examples = []
+        for c in corpus_elements:
+            author_tag = c.select_one('.ex_author')
+            if author_tag: author_tag.extract()
+            text = c.get_text(" ", strip=True)
+            if len(text) > 15: literary_examples.append(text)
+                
+        # FIX: Create a dedicated "Exemples Supplémentaires" block instead of clumping them
+        if literary_examples:
+            results.append({
+                "definition": "Exemples Littéraires / Presse :",
+                "examples": literary_examples[:10],
+                "tags": ["Corpus"]
+            })
+            
+        # 6. EXTRACT SYNONYMS
+        syn_elements = soup.select('.s_syn')
+        synonyms = list(dict.fromkeys([s.get_text(strip=True) for s in syn_elements]))
+
+        final_data = {"defs": results, "synonyms": synonyms[:10], "article": article}
+        
+        # 7. WRITE PARSED JSON
+        json_filename = f"lerobert_{word.lower()}_parsed.json"
+        with open(json_filename, "w", encoding="utf-8") as f:
+            json.dump(final_data, f, indent=2, ensure_ascii=False)
+            
+        return final_data
+        
+    except Exception as e:
+        print(f"CRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"defs": [], "synonyms": [], "article": ""}
 
 def fetch_batch_wikitext(word_list):
     url = "https://fr.wiktionary.org/w/api.php"
@@ -220,23 +301,24 @@ async def upload_books(files: list[UploadFile] = File(...)):
 @app.post("/api/fetch-words")
 def fetch_words_endpoint(req: WordRequest):
     known_words = get_known_words()
-    
-    # Filter out already known words
     words_to_process = [w for w in req.words if w.lower() not in known_words]
-    
     master_results = {}
+    
     batch_raw = fetch_batch_wikitext(words_to_process)
     
     for word in words_to_process:
         raw = batch_raw.get(word)
         wik_defs = parse_dictionary(process_wiktionary_templates(extract_french_section(raw))) if raw else []
-        rob_defs = get_robert_data(word)
         images = get_wikimedia_images(word, limit=15)
+        rob_data = get_robert_data(word)
         
         master_results[word] = {
             "occurrences": WORD_FREQUENCIES.get(word.lower(), 0),
             "wik_definitions": wik_defs,
-            "rob_definitions": rob_defs,
+            # THE FIX: Ensure this is ONLY the array of definitions, not the whole dictionary!
+            "rob_definitions": rob_data.get("defs", []), 
+            "synonyms": rob_data.get("synonyms", []),
+            "article": rob_data.get("article", ""),
             "images": images
         }
     return master_results
