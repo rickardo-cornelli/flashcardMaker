@@ -33,6 +33,9 @@ NAMES_TO_HIDE = [
     "Bonacieux", "Buckingham", "Anne d'Autriche", "Louis XIII", "Felton", 
     "de Winter", "Rochefort", "Tréville"
 ]
+# --- NEW GLOBAL DIRECTORY FOR RESULTS ---
+API_RESULTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "apiresults"))
+os.makedirs(API_RESULTS_DIR, exist_ok=True) # Creates it immediately when the server starts
 
 class WordRequest(BaseModel):
     words: list[str]
@@ -96,7 +99,7 @@ def get_robert_data(word):
         resp = SESSION.get(url, timeout=10)
         
         # 1. WRITE THE RAW HTML
-        raw_filename = f"lerobert_{word.lower()}_raw.html"
+        raw_filename = os.path.join(API_RESULTS_DIR, f"lerobert_{word.lower()}_raw.html")
         with open(raw_filename, "w", encoding="utf-8") as f:
             f.write(resp.text)
             
@@ -187,7 +190,7 @@ def get_robert_data(word):
         final_data = {"defs": results, "synonyms": synonyms[:10], "article": article}
         
         # 7. WRITE PARSED JSON
-        json_filename = f"lerobert_{word.lower()}_parsed.json"
+        json_filename = os.path.join(API_RESULTS_DIR, f"lerobert_{word.lower()}_parsed.json")
         with open(json_filename, "w", encoding="utf-8") as f:
             json.dump(final_data, f, indent=2, ensure_ascii=False)
             
