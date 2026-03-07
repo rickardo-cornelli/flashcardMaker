@@ -40,8 +40,20 @@ os.makedirs(API_RESULTS_DIR, exist_ok=True) # Creates it immediately when the se
 class WordRequest(BaseModel):
     words: list[str]
 
+# --- 1. Replace the old ExportRequest near the top ---
+class CardExportData(BaseModel):
+    word: str
+    article: str
+    definition: str
+    examples: list[str]
+    imageUrl: str
+    transEn: list[str]
+    transSv: list[str]
+    synonyms: list[str]
+
 class ExportRequest(BaseModel):
-    selected_data: dict
+    cards: list[CardExportData]
+    deck_name: str = "French words"
 
 # --- HELPER FUNCTIONS ---
 
@@ -113,8 +125,8 @@ def get_robert_data(word):
         pos_tag = soup.select_one('.d_cat')
         if pos_tag:
             pos_text = pos_tag.get_text(strip=True).lower()
-            if "masculin" in pos_text and "nom" in pos_text: article = "le / un"
-            elif "féminin" in pos_text and "nom" in pos_text: article = "la / une"
+            if "masculin" in pos_text and "nom" in pos_text: article = "un"
+            elif "féminin" in pos_text and "nom" in pos_text: article = "une"
         
         # 3. SMART EXTRACT: DEFINITIONS, CONTEXT, AND INLINE EXAMPLES
         results = []
@@ -282,7 +294,39 @@ def parse_dictionary(wikitext_processed):
             if clean_ex and clean_ex != current_entry['definition']:
                 current_entry['examples'].append(clean_ex)
     return entries
-
+def get_multiple_translations(word, target_lang):
+    """Fetches the main translation AND alternative synonyms from Google Translate."""
+    url = "https://translate.googleapis.com/translate_a/single"
+    params = {
+        "client": "gtx",
+        "sl": "fr",
+        "tl": target_lang,
+        "dt": ["t", "bd"], # 't' gets the main translation, 'bd' gets the dictionary alternatives
+        "q": word
+    }
+    try:
+        resp = SESSION.get(url, params=params, timeout=5)
+        data = resp.json()
+        
+        translations = []
+        # 1. Get the primary translation
+        if data[0] and data[0][0] and data[0][0][0]:
+            translations.append(data[0][0][0].lower())
+            
+        # 2. Get the alternative dictionary translations
+        if len(data) > 1 and data[1]:
+            for pos_block in data[1]:
+                # pos_block[1] contains the list of alternative words
+                if len(pos_block) > 1 and isinstance(pos_block[1], list):
+                    for alt in pos_block[1]:
+                        alt_lower = alt.lower()
+                        if alt_lower not in translations:
+                            translations.append(alt_lower)
+                            
+        return translations[:6] # Return the top 6 options
+    except Exception as e:
+        print(f"Translation error ({target_lang}): {e}")
+        return []
 
 # --- API ENDPOINTS ---
 
@@ -322,6 +366,10 @@ def fetch_words_endpoint(req: WordRequest):
             "rob_definitions": rob_data.get("defs", []), 
             "synonyms": rob_data.get("synonyms", []),
             "article": rob_data.get("article", ""),
+            "translations": {
+                "en": get_multiple_translations(word, "en"),
+                "sv": get_multiple_translations(word, "sv")
+            },
             "images": images
         }
     return master_results
@@ -349,17 +397,93 @@ def fetch_book_examples(word: str = Form(...), offset: int = Form(0)):
     return {"examples": paginated, "total": len(matches), "hasMore": len(matches) > (offset + 5)}
 
 @app.post("/api/export-anki")
-def export_to_anki(req: ExportRequest):
-    """Saves the final payload and appends words to known_words.txt"""
-    words_added = list(req.selected_data.keys())
+def export_to_anki(req: ExportRequest): # <-- Removed deck_name from here
+    """Generates the Green HTML cards and sends them directly to AnkiConnect."""
+    words_added = set()
+    added_count = 0
     
+    # Grab the deck name sent from Vue
+    target_deck = req.deck_name 
+    
+    for card in req.cards:
+        # Combine article and word (e.g., "un bateau" or "ôter")
+        word_display = f"{card.article} {card.word}".strip() if card.article else card.word
+        
+        # --- HTML STYLING ---
+        green_style = 'color: #2ecc71; font-weight: bold;'
+        
+        # 1. FRONT HTML (Updated for Smart Conjugation Highlighting)
+        front_html = ""
+        if card.examples:
+            # Match the first 5 characters (or whole word if shorter) to catch conjugations
+            stem_len = min(len(card.word), 5)
+            stem = card.word[:stem_len]
+            # Regex: \b matches word boundary, [a-zà-ÿ]* matches the rest of the conjugated word
+            pattern = re.compile(rf'\b({re.escape(stem)}[a-zàâçéèêëîïôûùüÿñæœ]*)\b', re.IGNORECASE)
+            
+            highlighted_ex = pattern.sub(rf'<span style="{green_style}">\1</span>', card.examples[0])
+            front_html = f"{highlighted_ex}"
+        else:
+            front_html = f'<span style="{green_style}">{word_display}</span>'
+            
+        # Add Google TTS Audio tag (AnkiConnect will download this automatically)
+        front_html += f"<br><br>[sound:_google_tts_fr_{card.word}.mp3]"
+        
+        # 2. BACK HTML
+        back_html = f'<span style="{green_style}">{word_display} =</span> {card.definition}'
+        
+        if card.transEn or card.transSv:
+            back_html += "<br><br>"
+            if card.transEn: back_html += f"🇬🇧 {', '.join(card.transEn)}<br>"
+            if card.transSv: back_html += f"🇸🇪 {', '.join(card.transSv)}"
+            
+        if card.synonyms:
+            back_html += f"<br><br><i>Syn: {', '.join(card.synonyms)}</i>"
+            
+        if card.imageUrl:
+            back_html += f'<br><br><img src="{card.imageUrl}">'
+
+        # --- ANKICONNECT PAYLOAD ---
+        note = {
+            "action": "addNote",
+            "version": 6,
+            "params": {
+                "note": {
+                    "deckName": target_deck, # <-- USE IT HERE
+                    "modelName": "Basic", 
+                    "fields": {
+                        "Front": front_html,
+                        "Back": back_html
+                    },
+                    "options": {"allowDuplicate": True},
+                    "tags": ["book_vocab"],
+                    "audio": [{
+                        "url": f"https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=fr&q={card.word}",
+                        "filename": f"_google_tts_fr_{card.word}.mp3",
+                        "fields": ["Front"]
+                    }]
+                }
+            }
+        }
+        
+        try:
+            # Send to AnkiConnect
+            resp = requests.post("http://127.0.0.1:8765", json=note).json()
+            if resp.get("error") is None:
+                words_added.add(card.word.lower())
+                added_count += 1
+            else:
+                print(f"Anki Error for '{card.word}': {resp.get('error')}")
+        except Exception as e:
+            print(f"Failed to reach AnkiConnect: {e}")
+            return {"status": "error", "message": "Could not connect to Anki. Make sure Anki is open and AnkiConnect is installed!"}
+
+    # Save to your text file to track progress
     with open(KNOWN_WORDS_FILE, "a", encoding="utf-8") as f:
         for word in words_added:
-            f.write(word.lower() + "\n")
+            f.write(word + "\n")
             
-    # Here you would typically generate the CSV or connect to AnkiConnect.
-    # For now, we return success and the frontend can handle the JSON.
-    return {"status": "success", "added_words": words_added}
+    return {"status": "success", "added_words": list(words_added)}
 
 if __name__ == "__main__":
     import uvicorn
