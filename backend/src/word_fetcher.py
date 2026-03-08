@@ -45,11 +45,11 @@ class CardExportData(BaseModel):
     word: str
     article: str
     definition: str
-    examples: list[str]
+    example: str     # <-- String, to allow editing in Vue
     imageUrl: str
-    transEn: list[str]
-    transSv: list[str]
-    synonyms: list[str]
+    transEn: str     # <-- String
+    transSv: str     # <-- String
+    synonyms: str    # <-- String
 
 class ExportRequest(BaseModel):
     cards: list[CardExportData]
@@ -397,46 +397,26 @@ def fetch_book_examples(word: str = Form(...), offset: int = Form(0)):
     return {"examples": paginated, "total": len(matches), "hasMore": len(matches) > (offset + 5)}
 
 @app.post("/api/export-anki")
-def export_to_anki(req: ExportRequest): # <-- Removed deck_name from here
-    """Generates the Green HTML cards and sends them directly to AnkiConnect."""
+def export_to_anki(req: ExportRequest):
+    """Generates HTML cards and sends them to AnkiConnect."""
     words_added = set()
-    added_count = 0
-    
-    # Grab the deck name sent from Vue
     target_deck = req.deck_name 
     
     for card in req.cards:
-        # Combine article and word (e.g., "un bateau" or "ôter")
-        word_display = f"{card.article} {card.word}".strip() if card.article else card.word
         
-        # --- HTML STYLING ---
-        green_style = 'color: #2ecc71; font-weight: bold;'
-        
-        # 1. FRONT HTML (Updated for Smart Conjugation Highlighting)
-        front_html = ""
-        if card.examples:
-            # Match the first 5 characters (or whole word if shorter) to catch conjugations
-            stem_len = min(len(card.word), 5)
-            stem = card.word[:stem_len]
-            # Regex: \b matches word boundary, [a-zà-ÿ]* matches the rest of the conjugated word
-            pattern = re.compile(rf'\b({re.escape(stem)}[a-zàâçéèêëîïôûùüÿñæœ]*)\b', re.IGNORECASE)
+        # 1. FRONT HTML (Smart Stem Highlighting)
+        front_html = card.example
             
-            highlighted_ex = pattern.sub(rf'<span style="{green_style}">\1</span>', card.examples[0])
-            front_html = f"{highlighted_ex}"
-        else:
-            front_html = f'<span style="{green_style}">{word_display}</span>'
-            
-        
-        # 2. BACK HTML
-        back_html = f'<span style="{green_style}">{word_display} =</span> {card.definition}'
+        # 2. BACK HTML (Vue now handles the word display and '=' formatting)
+        back_html = card.definition
         
         if card.transEn or card.transSv:
             back_html += "<br><br>"
-            if card.transEn: back_html += f"🇬🇧 {', '.join(card.transEn)}<br>"
-            if card.transSv: back_html += f"🇸🇪 {', '.join(card.transSv)}"
+            if card.transEn: back_html += f"🇬🇧 {card.transEn}<br>"
+            if card.transSv: back_html += f"🇸🇪 {card.transSv}"
             
         if card.synonyms:
-            back_html += f"<br><br><i>Syn: {', '.join(card.synonyms)}</i>"
+            back_html += f"<br><br><i>Syn: {card.synonyms}</i>"
             
         if card.imageUrl:
             back_html += f'<br><br><img src="{card.imageUrl}">'
@@ -447,7 +427,7 @@ def export_to_anki(req: ExportRequest): # <-- Removed deck_name from here
             "version": 6,
             "params": {
                 "note": {
-                    "deckName": target_deck, # <-- USE IT HERE
+                    "deckName": target_deck, 
                     "modelName": "Basic", 
                     "fields": {
                         "Front": front_html,
@@ -465,23 +445,22 @@ def export_to_anki(req: ExportRequest): # <-- Removed deck_name from here
         }
         
         try:
-            # Send to AnkiConnect
             resp = requests.post("http://127.0.0.1:8765", json=note).json()
             if resp.get("error") is None:
                 words_added.add(card.word.lower())
-                added_count += 1
             else:
                 print(f"Anki Error for '{card.word}': {resp.get('error')}")
         except Exception as e:
             print(f"Failed to reach AnkiConnect: {e}")
-            return {"status": "error", "message": "Could not connect to Anki. Make sure Anki is open and AnkiConnect is installed!"}
+            return {"status": "error", "message": "Could not connect to Anki. Make sure Anki is open!"}
 
-    # Save to your text file to track progress
     with open(KNOWN_WORDS_FILE, "a", encoding="utf-8") as f:
         for word in words_added:
             f.write(word + "\n")
             
     return {"status": "success", "added_words": list(words_added)}
+    # Save to your text file to track progress
+   
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,17 +1,21 @@
 <template>
   <q-page padding class="bg-grey-2">
     
-    <div class="row items-center q-mb-md">
-      <q-btn flat dense :icon="showSidebar ? 'visibility_off' : 'visibility'" 
-             :label="showSidebar ? 'Hide Sidebar' : 'Show Sidebar'" 
-             color="primary" 
-             @click="showSidebar = !showSidebar" />
-    
-    <div class="row items-center q-gutter-sm">
+    <div class="row items-center justify-between q-mb-md">
+      <div class="row q-gutter-md items-center">
+        <q-btn flat dense :icon="showSidebar ? 'visibility_off' : 'visibility'" 
+               :label="showSidebar ? 'Hide Sidebar' : 'Show Sidebar'" 
+               color="primary" 
+               @click="showSidebar = !showSidebar" />
+        <q-btn outline color="positive" icon="auto_awesome_mosaic" label="Stage Selected Cards (Cmd+Enter)" @click="stageSelectedCards" />
+      </div>
+             
+      <div class="row items-center q-gutter-sm">
         <span class="text-weight-bold text-grey-8">Target Anki Deck:</span>
         <q-input v-model="deckName" dense outlined bg-color="white" style="width: 250px" />
       </div>
     </div>
+
     <div class="row q-col-gutter-xl">
       
       <div v-if="showSidebar" class="col-12 col-md-3">
@@ -23,36 +27,50 @@
               <q-btn v-if="cardQueue.length > 0" size="sm" color="white" text-color="positive" class="text-bold" label="Export All" @click="exportQueue" />
             </q-card-section>
             
-            <q-list separator class="q-pa-sm">
+            <q-list separator class="q-pa-sm bg-grey-3">
               <div v-if="cardQueue.length === 0" class="text-caption text-grey italic q-pa-sm">
-                Select examples and click "Stage Card" to preview them here.
+                Select definitions and press Cmd+Enter to stage cards here.
               </div>
               
-          <q-card v-for="(card, i) in cardQueue" :key="card.id" flat bordered class="q-mb-sm bg-grey-1 relative-position">
+              <q-card v-for="(card, i) in cardQueue" :key="card.id" flat bordered class="q-mb-md bg-white relative-position">
                 <q-btn icon="cancel" color="negative" flat round dense size="xs" class="absolute-top-right z-top" @click="cardQueue.splice(i, 1)" />
-                <q-card-section class="q-pa-sm">
+                <q-card-section class="q-pa-sm q-gutter-y-xs">
+                  <div class="text-bold text-primary text-subtitle2">{{ card.article ? card.article + ' ' : '' }}{{ card.word }}</div>
                   
-                  <div class="text-caption q-mt-xs" v-if="card.examples.length">
-                    <span class="text-grey-7 text-bold">Front: </span>
-                    <span v-html="highlightWord(card.examples[0], card.word)"></span>
-                  </div>
-                  <div class="text-caption q-mt-xs" v-else>
-                    <span class="text-grey-7 text-bold">Front: </span>
-                    <span style="color: #2ecc71; font-weight: bold;">{{ card.article ? card.article + ' ' : '' }}{{ card.word }}</span>
+           <div class="text-caption text-bold text-grey-8 q-mt-xs">Front (Example)</div>
+                  <q-editor v-model="card.example" min-height="3rem"
+                    :toolbar="[['bold', 'italic', 'green', 'removeFormat']]"
+                    :definitions="{
+                      green: {
+                        tip: 'Toggle Green Highlight', 
+                        icon: 'palette', 
+                        label: 'Green',
+                        handler: applyGreenHighlight
+                      }
+                    }" 
+                  />
+                  
+                  <div class="text-caption text-bold text-grey-8 q-mt-sm">Back (Definition)</div>
+                  <q-editor v-model="card.definition" min-height="3rem" class="q-mb-sm"
+                    :toolbar="[['bold', 'italic', 'green', 'removeFormat']]"
+                    :definitions="{
+                      green: {
+                        tip: 'Toggle Green Highlight', 
+                        icon: 'palette', 
+                        label: 'Green',
+                        handler: applyGreenHighlight
+                      }
+                    }" 
+                  />
+                  
+                  <div class="row q-gutter-x-sm">
+                    <q-input v-model="card.transEn" label="🇬🇧 EN" dense outlined class="col text-caption" />
+                    <q-input v-model="card.transSv" label="🇸🇪 SV" dense outlined class="col text-caption" />
                   </div>
                   
-                  <div class="text-caption q-mt-sm">
-                    <span class="text-grey-7 text-bold">Back: </span> 
-                    <span style="color: #2ecc71; font-weight: bold;">{{ card.article ? card.article + ' ' : '' }}{{ card.word }} = </span> 
-                    {{ card.definition }}
-                  </div>
+                  <q-input v-model="card.synonyms" label="Synonyms" dense outlined class="text-caption" />
                   
-                  <div v-if="card.transEn.length || card.transSv.length" class="text-caption q-mt-xs text-blue-grey-8">
-                    <span v-if="card.transEn.length">🇬🇧 {{ card.transEn.join(', ') }} &nbsp;&nbsp;</span>
-                    <span v-if="card.transSv.length">🇸🇪 {{ card.transSv.join(', ') }}</span>
-                  </div>
-                  
-                  <q-img v-if="card.imageUrl" :src="card.imageUrl" style="width: 80px; height: 60px; border-radius: 4px;" class="q-mt-sm shadow-1" />
+                  <q-img v-if="card.imageUrl" :src="card.imageUrl" style="width: 100%; max-height: 100px; border-radius: 4px;" class="q-mt-sm shadow-1" fit="contain" />
                 </q-card-section>
               </q-card>
             </q-list>
@@ -62,22 +80,16 @@
             <q-card-section class="bg-blue-grey-9 text-white q-pa-sm">
               <div class="text-subtitle1 text-bold">Progress Summary</div>
             </q-card-section>
-            
             <q-list separator>
-              <div v-if="Object.keys(results).length === 0" class="q-pa-md text-caption text-grey italic">
-                Search for words to see progress.
-              </div>
+              <div v-if="Object.keys(results).length === 0" class="q-pa-md text-caption text-grey italic">Search for words to see progress.</div>
               <q-item v-for="(data, w) in results" :key="'summary-'+w" dense>
                 <q-item-section avatar>
                   <q-checkbox v-model="selections[w].skipped" color="grey" size="sm" />
                 </q-item-section>
                 <q-item-section>
-                  <q-item-label :class="{'text-strike text-grey': selections[w].skipped}" class="text-bold text-capitalize">
-                    {{ w }}
-                  </q-item-label>
+                  <q-item-label :class="{'text-strike text-grey': selections[w].skipped}" class="text-bold text-capitalize">{{ w }}</q-item-label>
                   <q-item-label caption class="row items-center">
-                    <q-icon :name="countCardsForWord(w) > 0 ? 'check_box' : 'check_box_outline_blank'" 
-                            :color="countCardsForWord(w) > 0 ? 'green' : 'grey-4'" size="xs" class="q-mr-xs"/>
+                    <q-icon :name="countCardsForWord(w) > 0 ? 'check_box' : 'check_box_outline_blank'" :color="countCardsForWord(w) > 0 ? 'green' : 'grey-4'" size="xs" class="q-mr-xs"/>
                     Cards: <b>{{ countCardsForWord(w) }}</b>
                   </q-item-label>
                 </q-item-section>
@@ -90,13 +102,8 @@
               <div class="text-subtitle1 text-bold">Future Words</div>
             </q-card-section>
             <q-card-section>
-              <div v-if="futureWords.length === 0" class="text-caption text-grey italic">
-                Click '+' next to a synonym.
-              </div>
               <div class="row q-gutter-xs">
-                <q-chip v-for="(fw, idx) in futureWords" :key="'fw-'+idx" removable @remove="futureWords.splice(idx, 1)" color="blue-1" text-color="primary" dense>
-                  {{ fw }}
-                </q-chip>
+                <q-chip v-for="(fw, idx) in futureWords" :key="'fw-'+idx" removable @remove="futureWords.splice(idx, 1)" color="blue-1" text-color="primary" dense>{{ fw }}</q-chip>
               </div>
             </q-card-section>
           </q-card>
@@ -115,9 +122,7 @@
                   <q-file v-model="bookFiles" label="Book texts" outlined multiple dense class="col-grow"/>
                   <q-btn icon="upload" color="black" @click="processBooks" :loading="indexing" />
                 </div>
-                <div v-if="libraryStats" class="text-caption text-positive q-mt-sm">
-                  Indexed {{ libraryStats.unique_words }} unique words.
-                </div>
+                <div v-if="libraryStats" class="text-caption text-positive q-mt-sm">Indexed {{ libraryStats.unique_words }} unique words.</div>
               </q-card-section>
             </q-card>
           </div>
@@ -136,7 +141,6 @@
         </div>
 
         <div v-for="(data, word) in results" :key="word" class="q-mb-xl">
-          
           <q-card flat bordered v-if="selections[word].skipped" class="bg-grey-4">
             <q-card-section class="row justify-between items-center q-pa-sm">
               <div class="text-h6 text-strike text-grey-7 q-ml-md text-capitalize">{{ word }}</div>
@@ -155,52 +159,38 @@
 
             <q-card-section class="bg-grey-1 border-bottom">
               <div class="row q-col-gutter-lg">
-                
                 <div class="col-12 col-md-5 border-right">
                   <div class="row items-center q-mb-sm">
                     <span class="text-subtitle2 text-primary q-mr-sm">Translations</span>
-                    <q-checkbox v-model="selections[word].includeTranslations" label="Include in Next Card" size="xs" color="primary" />
                   </div>
-                  
                   <div class="q-mb-sm row items-center">
                     <span class="text-h6 q-mr-sm" style="line-height: 1;">🇬🇧</span>
                     <span v-if="!data.translations?.en?.length" class="text-caption text-grey italic">N/A</span>
                     <div class="row q-gutter-x-sm inline">
-                      <q-checkbox v-for="t in data.translations?.en" :key="'en-'+t" 
-                                  v-model="selections[word].selectedTranslations.en" :val="t" size="xs" dense color="blue-grey-6">
-                        <span class="text-body2">{{ t }}</span>
-                      </q-checkbox>
+                      <q-checkbox v-for="t in data.translations?.en" :key="'en-'+t" v-model="selections[word].selectedTranslations.en" :val="t" size="xs" dense color="blue-grey-6"><span class="text-body2">{{ t }}</span></q-checkbox>
                     </div>
                   </div>
-
                   <div class="row items-center">
                     <span class="text-h6 q-mr-sm" style="line-height: 1;">🇸🇪</span>
                     <span v-if="!data.translations?.sv?.length" class="text-caption text-grey italic">N/A</span>
                     <div class="row q-gutter-x-sm inline">
-                      <q-checkbox v-for="t in data.translations?.sv" :key="'sv-'+t" 
-                                  v-model="selections[word].selectedTranslations.sv" :val="t" size="xs" dense color="blue-grey-6">
-                        <span class="text-body2">{{ t }}</span>
-                      </q-checkbox>
+                      <q-checkbox v-for="t in data.translations?.sv" :key="'sv-'+t" v-model="selections[word].selectedTranslations.sv" :val="t" size="xs" dense color="blue-grey-6"><span class="text-body2">{{ t }}</span></q-checkbox>
                     </div>
                   </div>
                 </div>
 
-           <div class="col-12 col-md-7">
+                <div class="col-12 col-md-7">
                   <div class="row items-center q-mb-sm">
                     <span class="text-subtitle2 text-primary q-mr-sm">Synonyms</span>
                   </div>
                   <div class="row q-gutter-x-md items-center inline">
                     <div v-if="!data.synonyms || data.synonyms.length === 0" class="text-caption text-grey italic">No synonyms found.</div>
-                    
                     <div v-for="syn in data.synonyms" :key="syn" class="row items-center no-wrap">
-                      <q-checkbox v-model="selections[word].selectedSynonyms" :val="syn" size="xs" dense color="blue-grey-6">
-                        <span class="text-body2">{{ syn }}</span>
-                      </q-checkbox>
+                      <q-checkbox v-model="selections[word].selectedSynonyms" :val="syn" size="xs" dense color="blue-grey-6"><span class="text-body2">{{ syn }}</span></q-checkbox>
                       <q-btn icon="add_circle" flat round dense size="xs" color="primary" class="q-ml-xs" @click="addFutureWord(syn)" tooltip="Add to Future Words" />
                     </div>
                   </div>
                 </div>
-
               </div>
             </q-card-section>
 
@@ -210,18 +200,14 @@
                   {{ source === 'rob_definitions' ? 'Le Robert' : 'Wiktionary' }}
                 </div>
                 
-                <div v-for="(entry, idx) in data[source]" :key="idx" class="q-mb-lg">
+                <div v-for="(entry, idx) in data[source]" :key="idx" class="q-mb-xl">
                   <div class="row no-wrap items-start">
                     <q-checkbox v-model="selections[word].activeDefs" :val="entry.definition" :color="source === 'rob_definitions' ? 'green' : 'blue'" class="q-mr-sm" />
                     <div>
                       <div v-if="entry.tags && entry.tags.length > 0" class="q-mb-xs">
-                        <q-badge v-for="tag in entry.tags" :key="tag" outline :color="source === 'rob_definitions' ? 'green' : 'blue'" class="q-mr-xs">
-                          {{ tag }}
-                        </q-badge>
+                        <q-badge v-for="tag in entry.tags" :key="tag" outline :color="source === 'rob_definitions' ? 'green' : 'blue'" class="q-mr-xs">{{ tag }}</q-badge>
                       </div>
-                      <span class="text-body1" :class="selections[word].activeDefs.includes(entry.definition) ? 'text-weight-bold' : ''">
-                        {{ entry.definition }}
-                      </span>
+                      <span class="text-body1" :class="selections[word].activeDefs.includes(entry.definition) ? 'text-weight-bold' : ''">{{ entry.definition }}</span>
                     </div>
                   </div>
 
@@ -230,15 +216,13 @@
                     <div class="q-mb-md bg-white q-pa-sm rounded-borders s">
                       <div class="text-caption text-primary text-bold q-mb-xs">Select Thumbnail</div>
                       <div class="row q-gutter-sm no-wrap scroll q-pb-sm">
-                        <q-img v-for="img in data.images" :key="img" :src="img" 
-                          @click="selections[word].selectedImages[entry.definition] = img"
+                        <q-img v-for="img in data.images" :key="img" :src="img" @click="selections[word].selectedImages[entry.definition] = img"
                           :style="selections[word].selectedImages[entry.definition] === img ? 'border: 4px solid #1976D2; opacity: 1;' : 'opacity: 0.5; cursor: pointer;'"
-                          style="width: 200px; height: 150px; border-radius: 8px; flex-shrink: 0;" 
-                        />
+                          style="width: 200px; height: 150px; border-radius: 8px; flex-shrink: 0;" />
                       </div>
                       <div class="row q-mt-sm items-center no-wrap">
                         <q-input v-model="selections[word].customImageUrls[entry.definition]" dense outlined placeholder="Paste custom image URL..." class="col-grow text-caption bg-grey-2" />
-                        <q-btn icon="check" color="primary" dense flat @click="applyCustomImage(word, entry.definition)" tooltip="Apply Custom Image" />
+                        <q-btn icon="check" color="primary" dense flat @click="applyCustomImage(word, entry.definition)" />
                       </div>
                     </div>
 
@@ -249,9 +233,8 @@
                       </q-checkbox>
                     </div>
 
-              <div class="q-mt-sm border-top q-pt-sm">
-                      <q-btn size="sm" outline color="primary" icon="add" label="Add more examples" 
-                             @click="selections[word].exampleAdder[entry.definition].show = !selections[word].exampleAdder[entry.definition].show" />
+                    <div class="q-mt-sm border-top q-pt-sm">
+                      <q-btn size="sm" outline color="primary" icon="add" label="Add more examples" @click="selections[word].exampleAdder[entry.definition].show = !selections[word].exampleAdder[entry.definition].show" />
                       
                       <div v-if="selections[word].exampleAdder[entry.definition].show" class="q-mt-sm bg-white q-pa-sm rounded-borders s">
                         <div class="row q-gutter-md q-mb-md">
@@ -264,9 +247,7 @@
                            <div v-for="(otherDef, oIdx) in (source === 'rob_definitions' ? data.wik_definitions : data.rob_definitions)" :key="otherDef.definition" class="q-mb-md">
                               <div class="text-caption text-bold text-blue-grey-10">#{{ oIdx + 1 }} {{ otherDef.definition }}</div>
                               <div v-for="oEx in otherDef.examples" :key="oEx" class="q-pl-md q-mt-xs">
-                                <q-checkbox v-model="selections[word].selectedExamples[entry.definition]" :val="oEx" size="xs">
-                                  <span class="text-caption text-blue-grey-8">{{ oEx }}</span>
-                                </q-checkbox>
+                                <q-checkbox v-model="selections[word].selectedExamples[entry.definition]" :val="oEx" size="xs"><span class="text-caption text-blue-grey-8">{{ oEx }}</span></q-checkbox>
                               </div>
                            </div>
                         </div>
@@ -275,12 +256,10 @@
                           <q-btn size="xs" color="primary" label="Search Book Text" @click="getBookExamples(word, 0)" class="q-mb-sm" />
                           <div v-if="bookResults[word]">
                             <div v-if="bookResults[word].list.length === 0" class="text-caption text-grey">No matches found.</div>
-                            <q-checkbox v-for="bEx in bookResults[word].list" :key="bEx" 
-                                        v-model="selections[word].selectedExamples[entry.definition]" :val="bEx" size="xs">
+                            <q-checkbox v-for="bEx in bookResults[word].list" :key="bEx" v-model="selections[word].selectedExamples[entry.definition]" :val="bEx" size="xs">
                                <span class="text-caption text-italic text-blue-grey-9">{{ bEx }}</span>
                             </q-checkbox>
-                            <q-btn v-if="bookResults[word].hasMore" label="Load Next 5" flat size="sm" color="grey-7" class="full-width q-mt-xs"
-                                   @click="getBookExamples(word, bookResults[word].offset + 5)" />
+                            <q-btn v-if="bookResults[word].hasMore" label="Load Next 5" flat size="sm" color="grey-7" class="full-width q-mt-xs" @click="getBookExamples(word, bookResults[word].offset + 5)" />
                           </div>
                         </div>
 
@@ -289,10 +268,6 @@
                           <q-btn icon="add_circle" color="primary" @click="addOwnExample(word, entry.definition)" tooltip="Add to list" />
                         </div>
                       </div>
-                    </div>
-
-                    <div class="q-mt-md flex justify-end">
-                      <q-btn color="positive" icon="auto_awesome_mosaic" label="Stage Card" @click="stageCard(word, entry.definition, data)" />
                     </div>
 
                   </div>
@@ -309,10 +284,13 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 
+
+
 const showSidebar = ref(true)
+const deckName = ref('French words')
 const bookFiles = ref([])
 const indexing = ref(false)
 const libraryStats = ref(null)
@@ -321,11 +299,19 @@ const isLoading = ref(false)
 const results = ref({})
 const selections = ref({})
 const bookResults = reactive({}) 
-const deckName = ref('French words') // Default deck name
 
-// Queues and Trackers
 const futureWords = ref([])
 const cardQueue = ref([])
+
+// --- COMMAND+ENTER GLOBAL SHORTCUT ---
+const handleKeydown = (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault()
+    stageSelectedCards()
+  }
+}
+onMounted(() => window.addEventListener('keydown', handleKeydown))
+onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
 const processBooks = async () => {
   indexing.value = true
@@ -356,7 +342,6 @@ const fetchData = async () => {
           customImageUrls: {},
           exampleAdder: {},
           selectedSynonyms: [],
-          includeTranslations: false,
           selectedTranslations: { en: [], sv: [] },
           skipped: false
         }
@@ -386,9 +371,7 @@ const countCardsForWord = (word) => {
 }
 
 const addFutureWord = (word) => {
-  if (!futureWords.value.includes(word)) {
-    futureWords.value.push(word)
-  }
+  if (!futureWords.value.includes(word)) futureWords.value.push(word)
 }
 
 const applyCustomImage = (word, def) => {
@@ -427,52 +410,112 @@ const getBookExamples = async (word, offset) => {
 }
 
 // -------------------------------------------------------------------
-// NEW: Card Generation Logic
-// -------------------------------------------------------------------
-
-// -------------------------------------------------------------------
-// NEW: Card Generation Logic (Updated Highlighting & Translations)
+// BATCH STAGING & FORMATTING
 // -------------------------------------------------------------------
 
 const highlightWord = (text, word) => {
   if (!text || !word) return text
-  
-  // Create a "stem" of the word (first 5 letters, or the whole word if it's short)
-  // This catches things like 'dissimuler' -> 'dissimul' matching 'dissimulerai'
   const stemLength = Math.min(word.length, 5)
   const stem = word.substring(0, stemLength)
-  
-  // Regex: Find any word boundary, followed by our stem, followed by any letters
   const regex = new RegExp(`\\b(${stem}[a-zàâçéèêëîïôûùüÿñæœ]*)\\b`, 'gi')
-  
   return text.replace(regex, '<span style="color: #2ecc71; font-weight: bold;">$1</span>')
+}
+
+
+// --- RICH TEXT EDITOR HANDLER (Bulletproof Toggle) ---
+const applyGreenHighlight = () => {
+  // 1. Tell the browser to use CSS (<span>)
+  document.execCommand('styleWithCSS', false, true)
+  
+  // 2. Ask the browser what color the currently highlighted text is
+  const currentColor = document.queryCommandValue('foreColor')
+  
+  // Normalize the string (removes spaces so rgb(46, 204, 113) becomes rgb(46,204,113))
+  const normalizedColor = currentColor ? currentColor.replace(/\s/g, '') : ''
+  const isGreen = normalizedColor === 'rgb(46,204,113)' || currentColor === '#2ecc71'
+
+  if (isGreen) {
+    // TOGGLE OFF: Strip the formatting back to normal text
+    document.execCommand('removeFormat', false, null)
+  } else {
+    // TOGGLE ON: Apply the green color
+    document.execCommand('foreColor', false, '#2ecc71')
+    
+    // Only apply bold if it isn't already bold
+    if (!document.queryCommandState('bold')) {
+      document.execCommand('bold', false, null)
+    }
+  }
+
+  // 3. FORCE VUE TO UPDATE THE V-MODEL
+  // Find the exact editor we are typing in and trigger an 'input' event so Vue saves the new HTML
+  const selection = window.getSelection()
+  if (selection && selection.rangeCount > 0) {
+    let node = selection.focusNode
+    if (node && node.nodeType === Node.TEXT_NODE) {
+      node = node.parentNode
+    }
+    
+    if (node && node.closest) {
+      const editorContent = node.closest('.q-editor__content')
+      if (editorContent) {
+        editorContent.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+    }
+  }
+}
+const stageSelectedCards = () => {
+  let stagedCount = 0
+  for (const w in selections.value) {
+    const sel = selections.value[w]
+    if (sel.skipped) continue
+    
+    sel.activeDefs.forEach(defText => {
+      if (sel.exampleAdder[defText]?.tab === 'own' && sel.exampleAdder[defText]?.text?.trim()) {
+        addOwnExample(w, defText)
+      }
+      
+      const wordData = results.value[w]
+      stageCard(w, defText, wordData)
+      stagedCount++
+    })
+    
+    sel.activeDefs = []
+  }
+  
+  if (stagedCount > 0) {
+    alert(`Staged ${stagedCount} cards!`)
+  }
 }
 
 const stageCard = (word, defText, wordData) => {
   const sel = selections.value[word]
-  
   const examples = sel.selectedExamples[defText] || []
   
-  let transEn = []
-  let transSv = []
-  // Only pull translations if the user checked "Include in Next Card"
-  if (sel.includeTranslations) {
-    transEn = sel.selectedTranslations?.en || []
-    transSv = sel.selectedTranslations?.sv || []
-  }
-
+  let transEn = sel.selectedTranslations?.en || []
+  let transSv = sel.selectedTranslations?.sv || []
   let syns = sel.selectedSynonyms || []
-  
+
+  // Pre-format the FRONT (Example)
+  let rawExampleText = examples.join(' / ')
+  let formattedExample = rawExampleText 
+    ? highlightWord(rawExampleText, word) 
+    : `<span style="color: #2ecc71; font-weight: bold;">${wordData.article ? wordData.article + ' ' : ''}${word}</span>`
+
+  // Pre-format the BACK (Definition) with the "Word =" logic
+  const wordDisplay = wordData.article ? `${wordData.article} ${word}` : word
+  const formattedDefinition = `<span style="color: #2ecc71; font-weight: bold;">${wordDisplay} =</span> ${defText}`
+
   const newCard = {
     id: Date.now() + Math.random(),
     word: word,
-    article: wordData.article,
-    definition: defText,
-    examples: [...examples], 
+    article: wordData.article || '',
+    definition: formattedDefinition, // <-- Now Vue injects the formatting here!
+    example: formattedExample, 
     imageUrl: sel.selectedImages[defText] || '',
-    transEn: [...transEn],
-    transSv: [...transSv],
-    synonyms: [...syns]
+    transEn: transEn.join(', '),
+    transSv: transSv.join(', '),
+    synonyms: syns.join(', ')
   }
 
   cardQueue.value.unshift(newCard) 
@@ -484,11 +527,15 @@ const exportQueue = async () => {
   try {
     const res = await axios.post('http://127.0.0.1:8000/api/export-anki', { 
       cards: cardQueue.value,
-      deck_name: deckName.value 
+      deck_name: deckName.value
     })
-    alert(`Successfully saved ${res.data.added_words.length} words to known list!`)
     
-    // Clear Queue after export
+    if (res.data.status === 'error') {
+       alert(res.data.message)
+       return
+    }
+
+    alert(`Successfully saved ${res.data.added_words.length} unique words to Anki!`)
     cardQueue.value = []
     
   } catch (e) {
