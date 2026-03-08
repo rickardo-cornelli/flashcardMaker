@@ -14,8 +14,8 @@ test.py
 test/
 
 # media files
-audio/
-images/
+books/
+
 
 node_modules/
 
