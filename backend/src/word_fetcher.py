@@ -426,8 +426,6 @@ def export_to_anki(req: ExportRequest): # <-- Removed deck_name from here
         else:
             front_html = f'<span style="{green_style}">{word_display}</span>'
             
-        # Add Google TTS Audio tag (AnkiConnect will download this automatically)
-        front_html += f"<br><br>[sound:_google_tts_fr_{card.word}.mp3]"
         
         # 2. BACK HTML
         back_html = f'<span style="{green_style}">{word_display} =</span> {card.definition}'

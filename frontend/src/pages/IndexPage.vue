@@ -185,18 +185,19 @@
                   </div>
                 </div>
 
-                <div class="col-12 col-md-7">
+           <div class="col-12 col-md-7">
                   <div class="row items-center q-mb-sm">
                     <span class="text-subtitle2 text-primary q-mr-sm">Synonyms</span>
-                    <q-checkbox v-model="selections[word].includeSynonyms" label="Include in Next Card" size="xs" color="primary" />
                   </div>
-                  <div class="row q-gutter-xs items-center">
+                  <div class="row q-gutter-x-md items-center inline">
                     <div v-if="!data.synonyms || data.synonyms.length === 0" class="text-caption text-grey italic">No synonyms found.</div>
                     
-                    <q-chip v-for="syn in data.synonyms" :key="syn" color="grey-3" text-color="black" class="q-ma-xs">
-                      {{ syn }}
+                    <div v-for="syn in data.synonyms" :key="syn" class="row items-center no-wrap">
+                      <q-checkbox v-model="selections[word].selectedSynonyms" :val="syn" size="xs" dense color="blue-grey-6">
+                        <span class="text-body2">{{ syn }}</span>
+                      </q-checkbox>
                       <q-btn icon="add_circle" flat round dense size="xs" color="primary" class="q-ml-xs" @click="addFutureWord(syn)" tooltip="Add to Future Words" />
-                    </q-chip>
+                    </div>
                   </div>
                 </div>
 
@@ -248,21 +249,21 @@
                       </q-checkbox>
                     </div>
 
-                    <div class="q-mt-sm border-top q-pt-sm">
+              <div class="q-mt-sm border-top q-pt-sm">
                       <q-btn size="sm" outline color="primary" icon="add" label="Add more examples" 
                              @click="selections[word].exampleAdder[entry.definition].show = !selections[word].exampleAdder[entry.definition].show" />
                       
                       <div v-if="selections[word].exampleAdder[entry.definition].show" class="q-mt-sm bg-white q-pa-sm rounded-borders s">
-                        <div class="row q-gutter-md q-mb-sm">
-                          <q-radio v-model="selections[word].exampleAdder[entry.definition].tab" val="other" label="Other Dictionary" dense size="sm" color="secondary" />
+                        <div class="row q-gutter-md q-mb-md">
+                          <q-radio v-model="selections[word].exampleAdder[entry.definition].tab" val="other" :label="source === 'rob_definitions' ? 'Wiktionary' : 'Le Robert'" dense size="sm" color="secondary" />
                           <q-radio v-model="selections[word].exampleAdder[entry.definition].tab" val="book" label="From Book" dense size="sm" color="secondary" />
                           <q-radio v-model="selections[word].exampleAdder[entry.definition].tab" val="own" label="Own Example" dense size="sm" color="secondary" />
                         </div>
 
                         <div v-if="selections[word].exampleAdder[entry.definition].tab === 'other'">
-                           <div class="text-caption text-grey italic q-mb-xs">Pulling examples from {{ source === 'rob_definitions' ? 'Wiktionary' : 'Le Robert' }}...</div>
-                           <div v-for="otherDef in (source === 'rob_definitions' ? data.wik_definitions : data.rob_definitions)" :key="otherDef.definition">
-                              <div v-for="oEx in otherDef.examples" :key="oEx">
+                           <div v-for="(otherDef, oIdx) in (source === 'rob_definitions' ? data.wik_definitions : data.rob_definitions)" :key="otherDef.definition" class="q-mb-md">
+                              <div class="text-caption text-bold text-blue-grey-10">#{{ oIdx + 1 }} {{ otherDef.definition }}</div>
+                              <div v-for="oEx in otherDef.examples" :key="oEx" class="q-pl-md q-mt-xs">
                                 <q-checkbox v-model="selections[word].selectedExamples[entry.definition]" :val="oEx" size="xs">
                                   <span class="text-caption text-blue-grey-8">{{ oEx }}</span>
                                 </q-checkbox>
@@ -354,7 +355,7 @@ const fetchData = async () => {
           selectedImages: {},
           customImageUrls: {},
           exampleAdder: {},
-          includeSynonyms: false,
+          selectedSynonyms: [],
           includeTranslations: false,
           selectedTranslations: { en: [], sv: [] },
           skipped: false
@@ -460,11 +461,8 @@ const stageCard = (word, defText, wordData) => {
     transSv = sel.selectedTranslations?.sv || []
   }
 
-  let syns = []
-  if (sel.includeSynonyms) {
-    syns = wordData.synonyms || []
-  }
-
+  let syns = sel.selectedSynonyms || []
+  
   const newCard = {
     id: Date.now() + Math.random(),
     word: word,
