@@ -11,142 +11,127 @@ BOOKS_DIR = os.path.join(ROOT_DIR, "books")
 OUTPUT_DIR = os.path.join(ROOT_DIR, "wordextractions")
 BASELINE_FILE = os.path.join(OUTPUT_DIR, "top_5000_french_lemmas.txt")
 IGNORE_FILE = os.path.join(OUTPUT_DIR, "my_ignored_words.txt")
+LEXIQUE_FILE = os.path.join(OUTPUT_DIR, "Lexique383.tsv")
+
+def load_lexique_dictionary():
+    """Creates a mapping from conjugation to infinitive (e.g., 'cria' -> 'crier')."""
+    lookup = {}
+    if not os.path.exists(LEXIQUE_FILE):
+        print("WARNING: Lexique383.tsv not found. Lemmatization might be less accurate.")
+        return lookup
+    
+    print("Loading Lexique dictionary for perfect lemmatization...")
+    with open(LEXIQUE_FILE, "r", encoding="utf-8", errors="ignore") as f:
+        next(f) # Skip header
+        for line in f:
+            parts = line.split('\t')
+            if len(parts) > 3:
+                word = parts[0].lower()
+                lemma = parts[2].lower()
+                if word != lemma:
+                    lookup[word] = lemma
+    return lookup
 
 def clean_gutenberg_text(text):
-    """Removes Gutenberg headers, footers, and normalizes typography for SpaCy."""
     start_pattern = r"\*\*\* START OF TH[E|IS] PROJECT GUTENBERG EBOOK.*? \*\*\*"
     end_pattern = r"\*\*\* END OF TH[E|IS] PROJECT GUTENBERG EBOOK.*? \*\*\*"
-    
     start_match = re.search(start_pattern, text, re.IGNORECASE)
     end_match = re.search(end_pattern, text, re.IGNORECASE)
-    
     start_idx = start_match.end() if start_match else 0
     end_idx = end_match.start() if end_match else len(text)
-    
     clean_text = text[start_idx:end_idx]
-    
-    # --- TYPOGRAPHY NORMALIZATION ---
-    clean_text = clean_text.replace("’", "'") 
-    clean_text = clean_text.replace("_", "")
-    clean_text = clean_text.replace("--", " ")
-    
+    clean_text = clean_text.replace("’", "'").replace("_", "").replace("--", " ")
     return clean_text
 
 def reconstruct_paragraphs(text):
-    """Glues hard-wrapped lines back together into proper NLP sentences."""
-    # Split by double-newlines (which Gutenberg uses for actual paragraphs)
     raw_paragraphs = re.split(r'\n\s*\n', text)
-    
-    healed_paragraphs = []
-    for p in raw_paragraphs:
-        # Replace single newlines inside the paragraph with a space
-        joined_text = p.replace('\n', ' ')
-        # Clean up any accidental double spaces
-        joined_text = re.sub(r'\s+', ' ', joined_text).strip()
-        
-        if joined_text:
-            healed_paragraphs.append(joined_text)
-            
-    return healed_paragraphs
+    return [re.sub(r'\s+', ' ', p.replace('\n', ' ')).strip() for p in raw_paragraphs if p.strip()]
 
 def load_text_list(filepath):
-    words = set()
-    if os.path.exists(filepath):
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                word = line.strip().lower()
-                if word: words.add(word)
-    return words
+    if not os.path.exists(filepath): return set()
+    with open(filepath, "r", encoding="utf-8") as f:
+        return {line.strip().lower() for line in f if line.strip()}
 
 def extract_book_vocabulary(book_name, threshold):
-    book_filename = f"{book_name}.txt"
-    book_path = os.path.join(BOOKS_DIR, book_filename)
-    
+    book_path = os.path.join(BOOKS_DIR, f"{book_name}.txt")
     if not os.path.exists(book_path):
-        print(f"ERROR: Could not find '{book_filename}' inside the '{BOOKS_DIR}' folder.")
+        print(f"ERROR: {book_path} not found.")
         return
 
     top_5000_lemmas = load_text_list(BASELINE_FILE)
     ignored_words = load_text_list(IGNORE_FILE)
+    lexique_lookup = load_lexique_dictionary()
 
-    print("Loading SpaCy Large French model...")
+    print("Loading SpaCy French model...")
     nlp = spacy.load("fr_core_news_lg")
 
     with open(book_path, "r", encoding="utf-8") as f:
         raw_text = f.read()
 
-    print("Stripping Gutenberg headers and normalizing typography...")
     clean_text = clean_gutenberg_text(raw_text)
-    
-    print("Reconstructing hard-wrapped sentences for NLP accuracy...")
     paragraphs = reconstruct_paragraphs(clean_text)
-    
-    # Calculate words based on healed paragraphs
     total_words = sum(len(p.split()) for p in paragraphs)
 
-    print(f"Lemmatizing '{book_name}' content...")
+    print(f"Processing '{book_name}'...")
     valid_lemmas = []
-    
-    # ... (start of the script remains the same)
-
-    print(f"Lemmatizing '{book_name}' content...")
-    valid_lemmas = []
-    
-    # Define the Parts of Speech (POS) we actually want for flashcards
-    # NOUN = Nouns, VERB = Verbs, ADJ = Adjectives, ADV = Adverbs
     desired_pos = {"NOUN", "VERB", "ADJ", "ADV"}
     
     for doc in nlp.pipe(paragraphs, batch_size=50):
         for token in doc:
-            # New filter: We added the check for token.pos_ in desired_pos
-            if (token.is_alpha and 
-                not token.is_stop and 
-                len(token) > 1 and 
-                token.pos_ != "PROPN" and
-                token.pos_ in desired_pos): # <-- THIS IS THE NEW LINE
+            # 1. First check: Is it a valid type and NOT a proper noun?
+            if (token.is_alpha and not token.is_stop and len(token) > 1 
+                and token.pos_ != "PROPN" and token.pos_ in desired_pos):
                 
-                lemma = token.lemma_.lower()
-                normalized = lemma.replace("œ", "oe")
+                raw_word = token.text.lower()
                 
-                if normalized not in top_5000_lemmas and lemma not in ignored_words:
-                    valid_lemmas.append(lemma)
+                # 2. Get the true lemma using Lexique (fallback to SpaCy)
+                lex_lemma = lexique_lookup.get(raw_word, token.lemma_.lower())
+                
+                norm_raw = raw_word.replace("œ", "oe")
+                norm_lemma = lex_lemma.replace("œ", "oe")
+                
+                # 3. The Double Check: Neither the raw word NOR the lemma is in the top 5000
+                if (norm_raw not in top_5000_lemmas) and (norm_lemma not in top_5000_lemmas):
+                    if lex_lemma not in ignored_words:
+                        valid_lemmas.append(lex_lemma)
 
-    # ... (rest of the script remains the same)
-
+    # 2. Count and separate into Frequent and Infrequent
     word_counts = Counter(valid_lemmas)
+    
     frequent_words = {w: c for w, c in word_counts.items() if c >= threshold}
     infrequent_words = {w: c for w, c in word_counts.items() if c < threshold}
 
-    sorted_frequent = sorted(frequent_words.items(), key=lambda item: item[1], reverse=True)
+    # 3. Sort BOTH lists by frequency (Highest frequency first)
+    sorted_frequent = sorted(frequent_words.items(), key=lambda x: x[1], reverse=True)
+    sorted_infrequent = sorted(infrequent_words.items(), key=lambda x: x[1], reverse=True)
+
+    # 4. Save the FREQUENT words file
     frequent_path = os.path.join(OUTPUT_DIR, f"{book_name}_frequent.txt")
     with open(frequent_path, "w", encoding="utf-8") as f:
-        for word, count in sorted_frequent:
-            f.write(f"{word}\n")
+        for word, count in sorted_frequent: 
+            f.write(f"{word},{count}\n")
 
+    # 5. Save the INFREQUENT words file
     infrequent_path = os.path.join(OUTPUT_DIR, f"{book_name}_infrequent.txt")
     with open(infrequent_path, "w", encoding="utf-8") as f:
-        for word, count in sorted(infrequent_words.items()):
-            f.write(f"{word}\n")
+        for word, count in sorted_infrequent: 
+            f.write(f"{word},{count}\n")
 
     print("\n" + "="*50)
     print(f"STATS FOR: {book_name}")
-    print(f"Total Words Processed: {total_words}")
-    print(f"Unique Lemmas Found: {len(word_counts)}")
-    print(f"Frequent Words (Count >= {threshold}): {len(frequent_words)}")
-    print(f"Infrequent Words: {len(infrequent_words)}")
+    print(f"Unique Lemmas: {len(word_counts)}")
+    print(f"Frequent Words (>= {threshold}): {len(sorted_frequent)}")
+    print(f"Infrequent Words (< {threshold}): {len(sorted_infrequent)}")
     print("="*50 + "\n")
 
-    for i, (word, count) in enumerate(sorted_frequent):
-        print(f"{word.ljust(15)} occurred {count} times.")
-        if (i + 1) % 5 == 0:
-            print("-" * 30)
-
-    print(f"\nSaved list to: {frequent_path}")
-
+    for i, (word, count) in enumerate(sorted_frequent[:20]): # Just print top 20 to keep console clean
+        print(f"{word.ljust(15)} count: {count}")
+        
+    print(f"\nSaved frequent list to: {frequent_path}")
+    print(f"Saved infrequent list to: {infrequent_path}")
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract B2+ vocabulary from a French text file.")
-    parser.add_argument("book_name", type=str, help="Name of the text file in the 'books' folder WITHOUT the .txt extension")
-    parser.add_argument("-t", "--threshold", type=int, default=2, help="Minimum number of occurrences to be considered frequent")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("book_name")
+    parser.add_argument("-t", "--threshold", type=int, default=2)
     args = parser.parse_args()
     extract_book_vocabulary(args.book_name, args.threshold)
