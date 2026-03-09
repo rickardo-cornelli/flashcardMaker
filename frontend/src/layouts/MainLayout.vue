@@ -45,10 +45,10 @@
               </div>
               <q-linear-progress :value="stat.sel_idx / stat.total_freq" color="primary" class="q-my-xs" />
               <div class="row">
-              <div class="col-8 text-caption text-grey-6 text-italic ">
+              <div class="col-6 text-caption text-grey-6 text-italic ">
                 Latest selection: "{{ stat.last_sel_word }}"
               </div>
-              <div class="col-1 q-ml-md q-mr-lg q-pl-md">
+              <div class="col-2 q-ml-md q-mr-lg q-pl-md">
                 {{ stat.total_learn }}✅  
               </div>
               <div class="col-1"> {{ stat.sel_idx - stat.total_learn }}❌

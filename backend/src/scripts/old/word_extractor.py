@@ -10,7 +10,7 @@ ROOT_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
 BOOKS_DIR = os.path.join(ROOT_DIR, "books")
 OUTPUT_DIR = os.path.join(ROOT_DIR, "wordextractions")
 BASELINE_FILE = os.path.join(OUTPUT_DIR, "top_5000_french_lemmas.txt")
-IGNORE_FILE = os.path.join(OUTPUT_DIR, "my_ignored_words.txt")
+IGNORE_FILE = os.path.join(OUTPUT_DIR, "ignore_list.txt")
 LEXIQUE_FILE = os.path.join(OUTPUT_DIR, "Lexique383.tsv")
 
 def load_lexique_dictionary():

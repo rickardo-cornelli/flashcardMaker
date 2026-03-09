@@ -130,3 +130,54 @@ def get_all_stats():
             })
             
     return stats
+
+def undo_selector_decision(book_name):
+    """Goes back one word and removes it from the 'to_learn' file if it was added."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT selector_index FROM book_progress WHERE book_name = ?', (book_name,))
+    row = cursor.fetchone()
+    
+    if not row or row[0] <= 0:
+        conn.close()
+        return {"success": False, "message": "Already at the beginning"}
+        
+    new_index = row[0] - 1
+    
+    # 1. Figure out what the previous word was
+    filepath = os.path.join(OUTPUT_DIR, f"{book_name}_frequent.txt")
+    target_word = None
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            if new_index < len(lines):
+                target_word = lines[new_index].split(',')[0].strip()
+
+    # 2. If it was added to the 'learn' list, remove it
+    learn_filepath = os.path.join(OUTPUT_DIR, f"words_from_{book_name}_to_learn.txt")
+    if target_word and os.path.exists(learn_filepath):
+        with open(learn_filepath, 'r', encoding='utf-8') as f:
+            learn_lines = f.readlines()
+        
+        # If the last word saved perfectly matches the one we are undoing, pop it off!
+        if learn_lines and learn_lines[-1].strip() == target_word:
+            learn_lines.pop()
+            with open(learn_filepath, 'w', encoding='utf-8') as f:
+                f.writelines(learn_lines)
+
+    # 3. Update the database index
+    cursor.execute('UPDATE book_progress SET selector_index = ? WHERE book_name = ?', (new_index, book_name))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True}
+
+def add_manual_word(book_name, word):
+    """Manually injects a typed word directly into the 'to_learn' file."""
+    if not word.strip(): return {"success": False}
+    
+    learn_filepath = os.path.join(OUTPUT_DIR, f"words_from_{book_name}_to_learn.txt")
+    with open(learn_filepath, 'a', encoding='utf-8') as f:
+        f.write(f"{word.strip().lower()}\n")
+        
+    return {"success": True}

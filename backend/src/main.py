@@ -39,6 +39,13 @@ class DecisionRequest(BaseModel):
     word: str
     decision: str
 
+class UndoRequest(BaseModel):
+    book_name: str
+
+class ManualAddRequest(BaseModel):
+    book_name: str
+    word: str
+
 # ==========================================
 # THE WORD SELECTOR API (NEW)
 # ==========================================
@@ -57,6 +64,14 @@ def api_save_decision(req: DecisionRequest):
 @app.get("/api/selector/stats")
 def api_get_stats():
     return selector_logic.get_all_stats()
+
+@app.post("/api/selector/undo")
+def api_undo_decision(req: UndoRequest):
+    return selector_logic.undo_selector_decision(req.book_name)
+
+@app.post("/api/selector/add-manual")
+def api_add_manual(req: ManualAddRequest):
+    return selector_logic.add_manual_word(req.book_name, req.word)
 # ==========================================
 # DICTIONARY & ANKI API (EXISTING)
 # ==========================================
