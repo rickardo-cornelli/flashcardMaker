@@ -84,7 +84,7 @@
               <div v-if="Object.keys(results).length === 0" class="q-pa-md text-caption text-grey italic">Search for words to see progress.</div>
               <q-item v-for="(data, w) in results" :key="'summary-'+w" dense>
                 <q-item-section avatar>
-                  <q-checkbox v-model="selections[w].skipped" color="grey" size="sm" />
+                  <q-checkbox v-model="selections[w].skipped" color="grey" size="sm" @update:model-value="(val) => { if(val) markWordProcessed(w) }" />
                 </q-item-section>
                 <q-item-section>
                   <q-item-label :class="{'text-strike text-grey': selections[w].skipped}" class="text-bold text-capitalize">{{ w }}</q-item-label>
@@ -96,7 +96,32 @@
               </q-item>
             </q-list>
           </q-card>
-
+          <div class="col-12 q-mt-md">
+            <q-card flat bordered class="bg-white">
+              <q-card-section>
+                <div class="text-h6"><q-icon name="library_add" color="primary" /> 3. Aggregate "To Learn" Lists</div>
+                <div class="text-caption text-grey-7 q-mb-md">
+                  Select multiple text files using your file browser. They will be merged, duplicates removed, and saved to the server.
+                </div>
+                <div class="row q-gutter-sm items-center">
+                  <q-file 
+                    v-model="listsToAggregate" 
+                    label="Select lists to merge (.txt)" 
+                    outlined 
+                    dense 
+                    multiple 
+                    class="col-grow"
+                    accept=".txt"
+                  >
+                    <template v-slot:prepend>
+                      <q-icon name="attach_file" />
+                    </template>
+                  </q-file>
+                  <q-btn label="Merge Lists" color="secondary" @click="runAggregation" :loading="isAggregating" icon="merge_type" />
+                </div>
+              </q-card-section>
+            </q-card>
+          </div>
           <q-card flat bordered class="bg-white">
             <q-card-section class="bg-primary text-white q-pa-sm">
               <div class="text-subtitle1 text-bold">Future Words</div>
@@ -127,18 +152,125 @@
             </q-card>
           </div>
 
-          <div class="col-12 col-md-6">
+        <div class="col-12 col-md-6">
             <q-card flat bordered class="bg-white full-height">
               <q-card-section>
-                <div class="text-h6"><q-icon name="search" /> 2. Search Words</div>
-                <div class="row q-gutter-sm q-mt-sm">
-                  <q-input v-model="rawInput" type="textarea" outlined dense rows="2" class="col-grow" label="Paste comma or newline separated words" />
-                  <q-btn label="Fetch" color="primary" @click="fetchData" :loading="isLoading" />
+                <div class="text-h6"><q-icon name="search" /> 2. Process Word List</div>
+                
+                <div class="row q-gutter-sm q-mt-sm items-center">
+                  <q-file 
+                    v-model="wordListFile" 
+                    label="Load pipeline list (.txt)" 
+                    outlined 
+                    dense 
+                    class="col-grow"
+                    accept=".txt"
+                    @update:model-value="loadWordsForBatching"
+                  >
+                    <template v-slot:prepend><q-icon name="checklist" /></template>
+                    <template v-slot:append v-if="wordListFile">
+                      <q-icon name="close" @click.stop="clearWordList" class="cursor-pointer" />
+                    </template>
+                  </q-file>
+                  
+                  <div v-if="fullWordList.length > 0" class="row no-wrap items-center q-gutter-sm q-ml-sm">
+                    <q-input 
+                      v-model.number="batchSize" 
+                      type="number" 
+                      dense 
+                      outlined 
+                      class="bg-white"
+                      style="width: 70px;" 
+                      min="1"
+                      tooltip="How many words to fetch at once"
+                    />
+                    <q-btn 
+                      color="secondary" 
+                      @click="fetchNextBatch" 
+                      :loading="isLoading" 
+                      icon="skip_next" 
+                      :label="`Fetch Next ${batchSize}`"
+                    />
+                  </div>
+                </div>
+
+               <div v-if="fullWordList.length > 0" class="row items-center q-mt-sm q-mb-md bg-blue-grey-1 q-pa-sm rounded-borders">
+                  <div class="text-caption text-bold text-primary q-mr-sm">List Progress:</div>
+                  <q-linear-progress 
+                    :value="completedWords.length / fullWordList.length" 
+                    color="secondary" 
+                    class="col-grow" 
+                    size="10px" 
+                    rounded 
+                  />
+                  
+                  <div class="text-caption text-bold text-primary q-ml-sm q-mr-md">
+                    {{ completedWords.length }} / {{ fullWordList.length }} words completed
+                  </div>
+
+                  <div class="row items-center no-wrap q-gutter-xs">
+                    <q-input 
+                      v-model.number="skipCount" 
+                      type="number" 
+                      dense 
+                      outlined 
+                      class="bg-white"
+                      style="width: 70px;" 
+                      placeholder="e.g. 20"
+                      min="1"
+                    />
+                    <q-btn 
+                      size="sm" 
+                      color="warning" 
+                      icon="fast_forward" 
+                      @click="skipFirstNWords" 
+                      tooltip="Mark the first X words as completed"
+                    />
+                  </div>
+                </div>
+
+                <q-separator v-if="fullWordList.length > 0" class="q-my-sm" />
+
+                <div class="text-caption text-grey-6 q-mt-sm">Current batch (or manual input):</div>
+                <div class="row q-gutter-sm q-mt-xs">
+                  <q-input v-model="rawInput" type="textarea" outlined dense rows="2" class="col-grow" placeholder="Paste manual words here..." />
+                  <q-btn label="Fetch Box" color="primary" @click="fetchData" :loading="isLoading" />
                 </div>
               </q-card-section>
             </q-card>
           </div>
         </div>
+        <q-card class="q-mt-md" bordered flat>
+  <q-card-section>
+    <div class="text-h6 text-warning">
+      <q-icon name="restore" /> Restore Processed Words
+    </div>
+    <div class="text-caption text-grey-7">
+      Paste words here (separated by commas or new lines) to "unmark" them. This removes them from your completed memory so they will appear in your next batch again.
+    </div>
+  </q-card-section>
+
+        <q-card-section>
+          <q-input
+            v-model="wordsToRestore"
+            type="textarea"
+            outlined
+            dense
+            placeholder="e.g. chien, chat, oiseau"
+            rows="3"
+          />
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn
+            color="warning"
+            icon="settings_backup_restore"
+            label="Unmark Words"
+            @click="unmarkProcessedWords"
+            :disable="wordsToRestore.trim().length === 0"
+          />
+        </q-card-actions>
+      </q-card>
 
         <div v-for="(data, word) in results" :key="word" class="q-mb-xl">
           <q-card flat bordered v-if="selections[word].skipped" class="bg-grey-4">
@@ -151,10 +283,20 @@
           <q-card flat bordered v-else>
             <q-card-section class="bg-blue-grey-9 text-white row items-center justify-between">
               <div class="row items-center">
-                <div class="text-h4 text-capitalize text-weight-bold q-mr-md">{{ word }}</div>
-                <span v-if="data.article" class="text-h6 text-grey-4 q-ml-md">{{ data.article }}</span>
+                <template v-if="renaming[word] !== undefined">
+                  <q-input v-model="renaming[word]" dense outlined class="q-mr-sm text-h5" bg-color="white" @keyup.enter="renameAndFetch(word)" autofocus />
+                  <q-btn icon="search" color="primary" dense round @click="renameAndFetch(word)" tooltip="Fetch new word" />
+                  <q-btn icon="close" color="negative" flat dense round @click="delete renaming[word]" class="q-ml-sm" />
+                </template>
+                
+                <template v-else>
+                  <div class="text-h4 text-capitalize text-weight-bold q-mr-md cursor-pointer" @click="renaming[word] = word">
+                    {{ word }} <q-icon name="edit" size="sm" color="grey-5" />
+                  </div>
+                  <span v-if="data.article" class="text-h6 text-grey-4 q-ml-md">{{ data.article }}</span>
+                </template>
               </div>
-              <q-btn icon="close" flat round dense @click="selections[word].skipped = true" tooltip="Minimize / Skip this word" />
+             <q-btn icon="close" flat round dense @click="selections[word].skipped = true; markWordProcessed(word)" tooltip="Minimize / Skip this word" />
             </q-card-section>
 
             <q-card-section class="bg-grey-1 border-bottom">
@@ -286,8 +428,34 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+// Add the variable to track the input box
+const skipCount = ref(null)
 
-
+// --- NEW: Fast-Forward Function ---
+const skipFirstNWords = () => {
+  if (skipCount.value > 0 && fullWordList.value.length > 0) {
+    // Slice the first N words from the master list
+    const wordsToSkip = fullWordList.value.slice(0, skipCount.value).map(w => w.toLowerCase());
+    
+    // Add them to the completed array if they aren't there already
+    wordsToSkip.forEach(w => {
+      if (!completedWords.value.includes(w)) {
+        completedWords.value.push(w);
+      }
+    });
+    
+    // Save the newly populated array to your hard drive
+    if (wordListFile.value && wordListFile.value.name) {
+      localStorage.setItem(`flashcard_completed_${wordListFile.value.name}`, JSON.stringify(completedWords.value));
+    }
+    
+    // Clear the input box
+    skipCount.value = null;
+  }
+}
+const renaming = ref({}) // Tracks which words are currently being edited
+const listsToAggregate = ref([])
+const isAggregating = ref(false)
 
 const showSidebar = ref(true)
 const deckName = ref('French words')
@@ -299,6 +467,10 @@ const isLoading = ref(false)
 const results = ref({})
 const selections = ref({})
 const bookResults = reactive({}) 
+const wordListFile = ref(null)
+const fullWordList = ref([])
+const completedWords = ref([])
+const batchSize = ref(10)
 
 const futureWords = ref([])
 const cardQueue = ref([])
@@ -312,7 +484,48 @@ const handleKeydown = (e) => {
 }
 onMounted(() => window.addEventListener('keydown', handleKeydown))
 onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
+// Add this near your other refs
+const wordsToRestore = ref('')
 
+const unmarkProcessedWords = () => {
+  // 1. Clean the pasted words
+  const wordsToProcess = wordsToRestore.value
+    .split(/[,\n]/)
+    .map(w => w.trim().toLowerCase())
+    .filter(w => w)
+
+  if (wordsToProcess.length === 0) return
+
+  const initialCount = completedWords.value.length
+
+  // 2. Rescue the words by filtering them out of the completed array
+  completedWords.value = completedWords.value.filter(
+    completedWord => {
+      const cleanMemoryWord = completedWord.trim().toLowerCase()
+      return !wordsToProcess.includes(cleanMemoryWord)
+    }
+  )
+
+  const newCount = completedWords.value.length
+  const restoredCount = initialCount - newCount
+
+  // 3. 🚨 THE CRITICAL FIX: Overwrite localStorage with the clean array! 🚨
+  if (wordListFile.value && wordListFile.value.name) {
+    localStorage.setItem(
+      `flashcard_completed_${wordListFile.value.name}`, 
+      JSON.stringify(completedWords.value)
+    )
+  }
+
+  // 4. Clean up the UI
+  wordsToRestore.value = ''
+  
+  if (restoredCount > 0) {
+    alert(`✅ Successfully rescued ${restoredCount} words from Local Storage!`)
+  } else {
+    alert(`⚠️ None found! Double-check the spelling of the words you pasted.`)
+  }
+}
 const processBooks = async () => {
   indexing.value = true
   const formData = new FormData()
@@ -364,6 +577,75 @@ const fetchData = async () => {
     console.error("Fetch error:", err)
   }
   isLoading.value = false
+  // Add this at the end of your fetchData function!
+  // (If your variable is named something other than wordData, use that instead)
+  return Object.keys(results.value);
+}
+
+// 1. Load the file and grab the array of completed words from memory
+const loadWordsForBatching = (file) => {
+  if (!file) {
+    clearWordList()
+    return
+  }
+  
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const words = e.target.result.split(/[,\n]/).map(w => w.trim()).filter(w => w)
+    fullWordList.value = words
+    
+    // Check memory for the array of completed words for THIS file
+    const saved = localStorage.getItem(`flashcard_completed_${file.name}`)
+    if (saved) {
+      completedWords.value = JSON.parse(saved)
+    } else {
+      completedWords.value = []
+    }
+    
+    rawInput.value = ''
+  }
+  reader.readAsText(file)
+}
+
+// 2. Clears the UI
+const clearWordList = () => {
+  wordListFile.value = null
+  fullWordList.value = []
+  completedWords.value = []
+  rawInput.value = ''
+}
+// 3. mark word as done
+const markWordProcessed = (word) => {
+  const w = word.toLowerCase()
+  // Only add it if it isn't already in the array
+  if (!completedWords.value.includes(w)) {
+    completedWords.value.push(w)
+    
+    // Instantly save the updated array to the browser's hard drive
+    if (wordListFile.value && wordListFile.value.name) {
+      localStorage.setItem(`flashcard_completed_${wordListFile.value.name}`, JSON.stringify(completedWords.value))
+    }
+  }
+}
+// 4. Dynamically fetch the next 10 untouched words
+const fetchNextBatch = async () => {
+  // Filter out words we already know are completed
+  const remainingWords = fullWordList.value.filter(w => !completedWords.value.includes(w.toLowerCase()))
+  
+  if (remainingWords.length === 0) {
+    alert("🎉 You've finished every word in this list!")
+    return
+  }
+
+  // Slice out the dynamic amount using your batchSize variable
+  const batch = remainingWords.slice(0, batchSize.value)
+  rawInput.value = batch.join('\n')
+  
+  // Wait for the fetch and grab the "receipt" of successful words!
+  const successfulWords = await fetchData()
+  console.log(successfulWords)
+  // THE NEW GHOST BUSTER
+ 
 }
 
 const countCardsForWord = (word) => {
@@ -406,6 +688,86 @@ const getBookExamples = async (word, offset) => {
     bookResults[word].list.push(...res.data.examples)
     bookResults[word].offset = offset
     bookResults[word].hasMore = res.data.hasMore
+  }
+}
+
+// --- INLINE RENAME & FETCH FUNCTION ---
+const renameAndFetch = async (oldWord) => {
+  const newWord = renaming.value[oldWord]?.trim().toLowerCase()
+  
+  if (!newWord || newWord === oldWord) {
+    delete renaming.value[oldWord]
+    return
+  }
+  
+  isLoading.value = true
+  try {
+    const res = await axios.post('http://127.0.0.1:8000/api/fetch-words', { words: [newWord] })
+    
+    if (res.data[newWord]) {
+      // Clean up the old word
+      delete results.value[oldWord]
+      delete selections.value[oldWord]
+      delete renaming.value[oldWord]
+
+      // Setup the new word
+      results.value[newWord] = res.data[newWord]
+      
+      const robDefs = res.data[newWord].rob_definitions || []
+      const wikDefs = res.data[newWord].wik_definitions || []
+      const allDefs = [...robDefs, ...wikDefs]
+
+      const newSelection = {
+        activeDefs: [],
+        selectedExamples: {},
+        selectedImages: {},
+        customImageUrls: {},
+        exampleAdder: {},
+        selectedSynonyms: [],
+        selectedTranslations: { en: [], sv: [] },
+        skipped: false
+      }
+
+      allDefs.forEach(d => {
+        newSelection.selectedExamples[d.definition] = []
+        newSelection.exampleAdder[d.definition] = { show: false, tab: 'other', text: '' }
+      })
+
+      selections.value[newWord] = newSelection
+    }
+  } catch (err) {
+    console.error("Error fetching new word:", err)
+    alert("Failed to fetch data for the new word.")
+  }
+  isLoading.value = false
+}
+
+// --- FILE DUPLICATE AGGREGATOR FUNCTION ---
+const runAggregation = async () => {
+  if (!listsToAggregate.value || listsToAggregate.value.length === 0) {
+    alert("Please select at least one file to merge.")
+    return
+  }
+
+  isAggregating.value = true
+  const formData = new FormData()
+  
+  listsToAggregate.value.forEach(file => {
+    formData.append('files', file)
+  })
+
+  try {
+    const res = await axios.post('http://127.0.0.1:8000/api/aggregate-lists', formData)
+    
+    if (res.data.status === 'success') {
+      alert(`✅ Successfully merged lists!\n\nSaved ${res.data.unique_count} unique words to:\nwordextractions/aggregations/${res.data.filename}`)
+      listsToAggregate.value = [] 
+    }
+  } catch (err) {
+    console.error("Aggregation failed:", err)
+    alert("Failed to merge the lists. Check console for details.")
+  } finally {
+    isAggregating.value = false
   }
 }
 
@@ -519,6 +881,8 @@ const stageCard = (word, defText, wordData) => {
   }
 
   cardQueue.value.unshift(newCard) 
+
+  markWordProcessed(word)
 }
 
 const exportQueue = async () => {
