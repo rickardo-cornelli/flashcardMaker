@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import selector_logic
 import fetcher_logic
-
+from datetime import datetime
+import os
 app = FastAPI()
 
 app.add_middleware(
@@ -92,6 +93,44 @@ def fetch_book_examples(word: str = Form(...), offset: int = Form(0)):
 def export_to_anki(req: ExportRequest):
     return fetcher_logic.export_to_anki_logic(req.cards, req.deck_name)
 
+@app.post("/api/aggregate-lists")
+async def aggregate_lists(files: list[UploadFile] = File(...)):
+    unique_words = set()
+    
+    # 1. Read all files and extract words
+    for file in files:
+        content = (await file.read()).decode("utf-8", errors="ignore")
+        lines = content.split('\n')
+        for line in lines:
+            if not line.strip() or line.startswith('#'):
+                continue
+            # Extract just the word in case the list has commas (e.g., word,frequency)
+            word = line.split(',')[0].strip().lower()
+            if word:
+                unique_words.add(word)
+    
+    # 2. Setup the directory path to wordextractions/aggregations
+    # Assuming main.py is in backend/src
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(current_dir, "..", ".."))
+    agg_dir = os.path.join(root_dir, "wordextractions", "aggregations")
+    os.makedirs(agg_dir, exist_ok=True)
+    
+    # 3. Format the filename with today's date
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    filename = f"big_list_For_cards_{date_str}.txt"
+    filepath = os.path.join(agg_dir, filename)
+    
+    # 4. Save the alphabetically sorted list
+    with open(filepath, "w", encoding="utf-8") as f:
+        for word in sorted(unique_words):
+            f.write(f"{word}\n")
+            
+    return {
+        "status": "success", 
+        "filename": filename, 
+        "unique_count": len(unique_words)
+    }
 
 if __name__ == "__main__":
     import uvicorn

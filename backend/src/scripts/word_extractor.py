@@ -7,11 +7,15 @@ from collections import Counter, defaultdict
 # --- PATH SETUP ---
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
+
 BOOKS_DIR = os.path.join(ROOT_DIR, "books")
 OUTPUT_DIR = os.path.join(ROOT_DIR, "wordextractions")
-BASELINE_FILE = os.path.join(OUTPUT_DIR, "top_5000_french_lemmas.txt")
+# This points to your new baseline folder in the root
+BASELINE_DIR = os.path.join(ROOT_DIR, "baseline")
+
+BASELINE_FILE = os.path.join(BASELINE_DIR, "top_5000_french_lemmas.txt")
 IGNORE_FILE = os.path.join(OUTPUT_DIR, "ignore_list.txt")
-LEXIQUE_FILE = os.path.join(OUTPUT_DIR, "Lexique383.tsv")
+LEXIQUE_FILE = os.path.join(BASELINE_DIR, "Lexique383.tsv")
 
 def load_lexique_data():
     lookup = {}
@@ -66,7 +70,45 @@ def get_raw_corpus_text(book_names):
                 combined += f.read().lower() + " "
     return combined
 
-def extract_master_vocabulary(target_book, corpus_books, book_thresh, corpus_thresh):
+def print_extraction_stats(target_book, check_only, unique_all_found, filtered_top5000, 
+                           filtered_ignore, filtered_ghosts, core_words, book_thresh, 
+                           corpus_books, tail_words, rescued_words, corpus_thresh, 
+                           final_list, filename):
+    
+    print("\n" + "="*50)
+    if check_only:
+        print(f"🛑 DRY RUN ANALYSIS FOR: {target_book} 🛑")
+    else:
+        print(f"✅ MASTER EXTRACTION COMPLETE FOR: {target_book}")
+    print("="*50)
+    
+    print(f"Total Unique Words Extracted:     {len(unique_all_found)}")
+    print("-" * 50)
+    print(f"[-] Filtered by Top 5000 List:    {len(filtered_top5000)}")
+    print(f"[-] Filtered by Ignore List:      {len(filtered_ignore)}")
+    print(f"[-] Filtered as Disguised Ghosts: {len(filtered_ghosts)}")
+    print("-" * 50)
+    print(f"Core Words (>= {book_thresh} in book):       {len(core_words)}")
+    
+    if corpus_books:
+        print(f"Tail Words (< {book_thresh} in book):        {len(tail_words)}")
+        print(f"[+] Rescued from Corpus (>= {corpus_thresh}):   {len(rescued_words)}")
+        
+    print("-" * 50)
+    print(f"Total Master List Generated:      {len(final_list)} words")
+
+    # The bottom message changes based on the flag
+    if check_only:
+        print("\n" + "🛑 "*4)
+        print(" DRY RUN ACTIVE: NO FILES WERE SAVED.")
+        print(f" This book WOULD have generated {len(final_list)} frequent words.")
+        print("🛑 "*4 + "\n")
+    else:
+        print(f"\nSaved directly to: wordextractions/{target_book}/{filename}")
+        print("="*50 + "\n")
+
+
+def extract_master_vocabulary(target_book, corpus_books, book_thresh, corpus_thresh, check_only=False):
     book_path = os.path.join(BOOKS_DIR, f"{target_book}.txt")
     if not os.path.exists(book_path):
         print(f"ERROR: {book_path} not found.")
@@ -149,36 +191,51 @@ def extract_master_vocabulary(target_book, corpus_books, book_thresh, corpus_thr
         final_list.append((word, total_freq))
 
     final_list.sort(key=lambda x: x[1], reverse=True)
+    final_list.sort(key=lambda x: x[1], reverse=True)
 
-    final_path = os.path.join(book_out_dir, f"{target_book}_frequent_all_dumas.txt")
-    with open(final_path, "w", encoding="utf-8") as f:
-        for word, freq in final_list: f.write(f"{word},{freq}\n")
-
-    # --- PRINT STATS ---
-    print("\n" + "="*50)
-    print(f"✅ MASTER EXTRACTION COMPLETE FOR: {target_book}")
-    print("="*50)
-    print(f"Total Unique Words Extracted:     {len(unique_all_found)}")
-    print("-" * 50)
-    print(f"[-] Filtered by Top 5000 List:    {len(filtered_top5000)}")
-    print(f"[-] Filtered by Ignore List:      {len(filtered_ignore)}")
-    print(f"[-] Filtered as Disguised Ghosts: {len(filtered_ghosts)}")
-    print("-" * 50)
-    print(f"Core Words (>= {book_thresh} in book):       {len(core_words)}")
+    # 1. Figure out what the filename should be
     if corpus_books:
-        print(f"Tail Words (< {book_thresh} in book):        {len(tail_words)}")
-        print(f"[+] Rescued from Corpus (>= {corpus_thresh}):   {len(rescued_words)}")
-    print("-" * 50)
-    print(f"Total Master List Generated:      {len(final_list)} words")
-    print(f"\nSaved directly to: wordextractions/{target_book}/{target_book}_frequent_all_dumas.txt")
-    print("="*50 + "\n")
+        filename = f"{target_book}_frequent_all.txt"
+    else:
+        filename = f"{target_book}_frequent.txt"
+
+    # 2. Call our new printing function!
+    print_extraction_stats(
+        target_book=target_book,
+        check_only=check_only,
+        unique_all_found=unique_all_found,
+        filtered_top5000=filtered_top5000,
+        filtered_ignore=filtered_ignore,
+        filtered_ghosts=filtered_ghosts,
+        core_words=core_words,
+        book_thresh=book_thresh,
+        corpus_books=corpus_books,
+        tail_words=tail_words,
+        rescued_words=rescued_words,
+        corpus_thresh=corpus_thresh,
+        final_list=final_list,
+        filename=filename
+    )
+
+    # 3. The Kill Switch (exit before saving)
+    if check_only:
+        for word, freq in final_list: 
+            print(f"{word},{freq}")
+        return 
+
+    # 4. Save the file (only reached if check_only is False)
+    final_path = os.path.join(book_out_dir, filename)
+    with open(final_path, "w", encoding="utf-8") as f:
+        for word, freq in final_list: 
+            f.write(f"{word},{freq}\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--check-only", action="store_true", help="Run analysis without saving files")
     parser.add_argument("target_book")
     parser.add_argument("corpus_books", nargs='*', help="List of other books to search against")
     parser.add_argument("-t", "--threshold", type=int, default=5, help="Minimum freq in the target book")
     parser.add_argument("-c", "--corpus-threshold", type=int, default=15, help="Minimum freq across the entire corpus")
     args = parser.parse_args()
     
-    extract_master_vocabulary(args.target_book, args.corpus_books, args.threshold, args.corpus_threshold)
+    extract_master_vocabulary(args.target_book, args.corpus_books, args.threshold, args.corpus_threshold, args.check_only)
