@@ -122,7 +122,7 @@ def extract_master_vocabulary(target_book, corpus_books, book_thresh, corpus_thr
     lex_lookup, surface_to_lemmas, lemma_to_forms = load_lexique_data()
 
     print("Loading SpaCy French model...")
-    nlp = spacy.load("fr_core_news_lg")
+    nlp = spacy.load("fr_core_news_sm")
 
     with open(book_path, "r", encoding="utf-8") as f:
         paragraphs = reconstruct_paragraphs(clean_gutenberg_text(f.read()))
@@ -133,6 +133,8 @@ def extract_master_vocabulary(target_book, corpus_books, book_thresh, corpus_thr
     
     for doc in nlp.pipe(paragraphs, batch_size=50):
         for token in doc:
+            if token.is_title and not token.is_sent_start:
+                continue
             if token.is_alpha and not token.is_stop and len(token) > 1 and token.pos_ not in {"PROPN", "PUNCT"} and token.pos_ in {"NOUN", "VERB", "ADJ", "ADV"}:
                 raw_word = token.text.lower()
                 lex_lemma = lex_lookup.get(raw_word, token.lemma_.lower()).replace("œ", "oe")
